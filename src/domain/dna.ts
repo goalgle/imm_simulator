@@ -21,8 +21,10 @@ export type Wave = {
 export type Drives = {
   // 가장 가까운 포식자(다른 종족)에서 멀어지는 방향. triggerRadius 안에 있을 때만 활성.
   avoidPredator: { weight: number; triggerRadius: number };
-  // 가장 가까운 영양분으로 향함. 영양분이 있으면 항상 활성.
+  // 가장 가까운 영양분으로 향함. 영양분이 있으면 항상 활성. (세균이 사용)
   seekNutrient: { weight: number };
+  // 가장 가까운 먹이(다른 종족)로 향함. (백혈구가 세균을 추적할 때 사용)
+  seekPrey: { weight: number };
   // 가장 가까운 동족이 너무 가까울 때 멀어짐. comfortRadius 안에 있을 때만 활성.
   spaceAlly: { weight: number; comfortRadius: number };
   // 가장 가까운 동족으로 향함 (군집형). 항상 활성.
@@ -65,7 +67,9 @@ export type DNA = {
 // 아이디어 기획서 §백혈구 종류별 파라미터 #1 호중구.
 // base 값은 화면에서 시각 확인 가능한 크기(32px)로 스케일.
 // 색상 #E8B4D4 → HSL(322, 53%, 81%) 근사.
-// M2 단계에선 자체 추진하지 않으므로 speed/turnRate/drives 모두 무영향 기본값.
+// M3.1 부터 자체 추진 활성: speed=15(세균의 절반), turnRate=1.5 (세균보다 둔함),
+//   seekPrey weight=1.0 으로 가장 가까운 세균을 추적.
+//   충격파에 의한 가속과 자체 추진이 가산되어 "관전형 + 결정적 개입" 균형.
 export const NEUTROPHIL: DNA = {
   shape: {
     base: 32,
@@ -74,10 +78,11 @@ export const NEUTROPHIL: DNA = {
     w3: { A: 0.10, n: 8, omega: 3.5 },
   },
   color: { h: 322, s: 53, l: 81 },
-  behavior: { target: 1.0, speed: 0, contact: 0.35, turnRate: 0 },
+  behavior: { target: 1.0, speed: 15, contact: 0.35, turnRate: 1.5 },
   drives: {
     avoidPredator: { weight: 0, triggerRadius: 0 },
     seekNutrient:  { weight: 0 },
+    seekPrey:      { weight: 1.0 },
     spaceAlly:     { weight: 0, comfortRadius: 0 },
     seekAlly:      { weight: 0 },
   },
@@ -103,6 +108,7 @@ export const BACTERIA_A: DNA = {
   drives: {
     avoidPredator: { weight: 1.0, triggerRadius: 180 },
     seekNutrient:  { weight: 0.6 },
+    seekPrey:      { weight: 0 },
     spaceAlly:     { weight: 0.3, comfortRadius: 50 },
     seekAlly:      { weight: 0 },
   },

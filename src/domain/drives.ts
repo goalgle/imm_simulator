@@ -26,6 +26,15 @@ export type DriveEval = {
   activation: number;
 };
 
+// 게임: 한 엔티티의 "감각 입력". 자기를 둘러싼 환경 정보 묶음.
+//        BacteriaBehaviorSystem / WhiteCellBehaviorSystem 이 종족별로 다르게 채워서 전달.
+export type Senses = {
+  predators: readonly Positioned[];   // 회피 대상 (세균 → 백혈구, 백혈구 → 없음)
+  allies: readonly Positioned[];       // 동족 (자기 자신 포함 가능)
+  nearestNutrient: Positioned | null;  // 영양분 (세균이 사용)
+  nearestPrey: Positioned | null;      // 먹이 (백혈구가 사용 — 세균)
+};
+
 const ZERO: DriveEval = { dirX: 0, dirY: 0, activation: 0 };
 
 // 게임: 가장 가까운 후보까지의 (거리, dx, dy). 후보 없으면 null.
@@ -84,6 +93,21 @@ export function evalSeekNutrient(
   return { dirX: dx / dist, dirY: dy / dist, activation: 1 };
 }
 
+// 게임: seekPrey — 가장 가까운 먹이(다른 종족) 방향. 있으면 활성도 1.
+//        백혈구가 세균을 추적할 때 사용. 세균은 weight=0 이라 무영향.
+export function evalSeekPrey(
+  selfX: number,
+  selfY: number,
+  prey: Positioned | null,
+): DriveEval {
+  if (prey === null) return ZERO;
+  const dx = prey.x - selfX;
+  const dy = prey.y - selfY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 0.001) return { dirX: 0, dirY: 0, activation: 1 };
+  return { dirX: dx / dist, dirY: dy / dist, activation: 1 };
+}
+
 // 게임: spaceAlly — 가장 가까운 동족이 comfortRadius 안에 있으면 멀어지는 방향.
 //        가까울수록 활성도 ↑.
 export function evalSpaceAlly(
@@ -124,14 +148,13 @@ export function evalSeekAlly(
 export function computeDesiredDirection(
   self: Positioned,
   drives: Drives,
-  predators: readonly Positioned[],
-  allies: readonly Positioned[],
-  nearestNutrient: Positioned | null,
+  senses: Senses,
 ): { dirX: number; dirY: number } {
-  const ap = evalAvoidPredator(self.x, self.y, predators, drives.avoidPredator.triggerRadius);
-  const sn = evalSeekNutrient(self.x, self.y, nearestNutrient);
-  const sp = evalSpaceAlly(self.x, self.y, allies, self, drives.spaceAlly.comfortRadius);
-  const sa = evalSeekAlly(self.x, self.y, allies, self);
+  const ap = evalAvoidPredator(self.x, self.y, senses.predators, drives.avoidPredator.triggerRadius);
+  const sn = evalSeekNutrient(self.x, self.y, senses.nearestNutrient);
+  const sprey = evalSeekPrey(self.x, self.y, senses.nearestPrey);
+  const sp = evalSpaceAlly(self.x, self.y, senses.allies, self, drives.spaceAlly.comfortRadius);
+  const sa = evalSeekAlly(self.x, self.y, senses.allies, self);
 
   let dx = 0;
   let dy = 0;
@@ -139,6 +162,8 @@ export function computeDesiredDirection(
   dy += ap.dirY * ap.activation * drives.avoidPredator.weight;
   dx += sn.dirX * sn.activation * drives.seekNutrient.weight;
   dy += sn.dirY * sn.activation * drives.seekNutrient.weight;
+  dx += sprey.dirX * sprey.activation * drives.seekPrey.weight;
+  dy += sprey.dirY * sprey.activation * drives.seekPrey.weight;
   dx += sp.dirX * sp.activation * drives.spaceAlly.weight;
   dy += sp.dirY * sp.activation * drives.spaceAlly.weight;
   dx += sa.dirX * sa.activation * drives.seekAlly.weight;

@@ -11,7 +11,7 @@ import type { NutrientSystem } from './NutrientSystem';
 import { Bacteria as BacteriaCtor } from '../entities/Bacteria';
 import type { CellRenderer } from '../render/CellRenderer';
 import type { DNA } from '../domain/dna';
-import { computeDesiredDirection, type Positioned } from '../domain/drives';
+import { computeDesiredDirection, type Positioned, type Senses } from '../domain/drives';
 
 // 게임: 분열 시 자식 위치 오프셋 (px). 부모와 약간 떨어져 시작.
 const SPAWN_OFFSET = 12;
@@ -58,14 +58,14 @@ export class BacteriaBehaviorSystem {
       const idx = nutrients.findNearestIndex(b.x, b.y);
       const nutrient = idx >= 0 ? nutrients.get(idx) ?? null : null;
 
-      // 게임: drives 평가 → 목표 단위 방향
-      const dir = computeDesiredDirection(
-        b,
-        b.dna.drives,
+      // 게임: drives 평가 → 목표 단위 방향. 세균은 prey 사용 안 함 (weight=0).
+      const senses: Senses = {
         predators,
-        this.bacteria,
-        nutrient,
-      );
+        allies: this.bacteria,
+        nearestNutrient: nutrient,
+        nearestPrey: null,
+      };
+      const dir = computeDesiredDirection(b, b.dna.drives, senses);
 
       // 게임: 부드러운 가속. turnRate 가 클수록 desired velocity 로 빠르게 수렴.
       //        k = 1 - exp(-turnRate × dt). dt 가 작아도 안정적 lerp.

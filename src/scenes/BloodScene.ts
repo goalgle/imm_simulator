@@ -13,6 +13,7 @@ import { ShockwaveRenderer } from '../render/ShockwaveRenderer';
 import { NutrientSystem } from '../systems/NutrientSystem';
 import { NutrientRenderer } from '../render/NutrientRenderer';
 import { BacteriaBehaviorSystem } from '../systems/BacteriaBehaviorSystem';
+import { WhiteCellBehaviorSystem } from '../systems/WhiteCellBehaviorSystem';
 import { applySeparation } from '../domain/separation';
 
 // 게임: 초기 호중구 수.
@@ -51,7 +52,7 @@ export class BloodScene extends Phaser.Scene {
   private shockwaveSystem!: ShockwaveSystem;
   private nutrientSystem!: NutrientSystem;
   private bacteriaBehavior!: BacteriaBehaviorSystem;
-  private cells: WhiteCell[] = [];
+  private whiteCellBehavior!: WhiteCellBehaviorSystem;
   private hudText!: Phaser.GameObjects.Text;
 
   constructor() {
@@ -78,13 +79,14 @@ export class BloodScene extends Phaser.Scene {
       NUTRIENT_RESPAWN_DELAY,
     );
     this.bacteriaBehavior = new BacteriaBehaviorSystem(this.cellRenderer);
+    this.whiteCellBehavior = new WhiteCellBehaviorSystem();
 
     // 게임: 호중구 무작위 배치.
     for (let i = 0; i < NEUTROPHIL_COUNT; i++) {
       const x = 100 + Math.random() * (W - 200);
       const y = 100 + Math.random() * (H - 200);
       const phase = Math.random() * Math.PI * 2;
-      this.cells.push(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, phase));
+      this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, phase));
     }
 
     // 게임: 세균 무작위 배치.
@@ -101,7 +103,7 @@ export class BloodScene extends Phaser.Scene {
       this.shockwaveSystem.trySpawn(pointer.x, pointer.y, t);
     });
 
-    this.add.text(20, 20, 'M2.2: drives + 관성 + 분리력', {
+    this.add.text(20, 20, 'M3.1: 호중구 자체 추진 (drives.seekPrey)', {
       color: '#aaa',
       fontFamily: 'ui-monospace, monospace',
       fontSize: '14px',
@@ -119,36 +121,49 @@ export class BloodScene extends Phaser.Scene {
     const dt = delta / 1000;
     const bounds = { width: this.scale.width, height: this.scale.height };
 
-    // 게임: 1) 충격파 시스템 (자원, 만료 정리)
+    const cells = this.whiteCellBehavior.getAll();
+    const bacteria = this.bacteriaBehavior.getAll();
+
+    // 게임: 1) 시스템 갱신 (자원/풀)
     this.shockwaveSystem.update(t);
-    // 게임: 2) 영양분 시스템 (부활 처리)
     this.nutrientSystem.update(t);
-    // 게임: 3) 충격파 임펄스를 백혈구에 적용 (영양분/세균은 영향 없음)
-    this.shockwaveSystem.applyToCells(this.cells, t, dt);
-    // 게임: 4) 같은 종족 분리력 — 너무 붙은 것 방지.
-    //         두 종족 분리는 별도 호출 (다른 종 간 분리는 M3 충돌이 처리).
-    applySeparation(this.cells, SEPARATION_PADDING, SEPARATION_STRENGTH, dt);
+
+    // 게임: 2) 외부 임펄스 — 충격파를 백혈구에 적용 (영양분/세균은 영향 없음)
+    this.shockwaveSystem.applyToCells(cells, t, dt);
+
+    // 게임: 3) 같은 종족 분리력 (다른 종 간은 M3.4 충돌 시스템에서 처리 예정)
     applySeparation(
-      this.bacteriaBehavior.getAll() as unknown as import('../domain/separation').SeparableEntity[],
+      cells as unknown as import('../domain/separation').SeparableEntity[],
       SEPARATION_PADDING,
       SEPARATION_STRENGTH,
       dt,
     );
-    // 게임: 5) 백혈구 물리/렌더 갱신
-    for (const cell of this.cells) cell.update(t, dt, bounds);
-    // 게임: 6) 세균 행동 + 물리/렌더 (drives 평가, 관성, 분열 자식 생성).
-    //         predators 인자로 백혈구 위치 전달.
-    this.bacteriaBehavior.update(t, dt, bounds, this.nutrientSystem, this.cells);
-    // 게임: 7) 시각화
+    applySeparation(
+      bacteria as unknown as import('../domain/separation').SeparableEntity[],
+      SEPARATION_PADDING,
+      SEPARATION_STRENGTH,
+      dt,
+    );
+
+    // 게임: 4) 자체 추진 lerp (drives 기반 desired velocity 로 부드럽게 수렴).
+    //         WhiteCell: 가장 가까운 세균을 추적 (seekPrey).
+    //         Bacteria: 영양분 추적 + 백혈구 회피 (avoidPredator).
+    //         아직 위치 적분 전이라 충격파 임펄스와 자연 가산됨.
+    this.whiteCellBehavior.update(dt, bacteria);
+    this.bacteriaBehavior.update(t, dt, bounds, this.nutrientSystem, cells);
+
+    // 게임: 5) 백혈구 위치/렌더 갱신 (BacteriaBehavior 는 내부에서 b.update 까지 처리함)
+    for (const cell of cells) cell.update(t, dt, bounds);
+
+    // 게임: 6) 시각화
     this.nutrientRenderer.draw(this.nutrientSystem.getAllSlots());
     this.shockwaveRenderer.draw(this.shockwaveSystem.getActiveWaves(), t);
 
     // 게임: HUD
     const charges = this.shockwaveSystem.getCharges();
     const maxCharges = this.shockwaveSystem.getMaxCharges();
-    const bacteriaCount = this.bacteriaBehavior.getAll().length;
     this.hudText.setText(
-      `charges: ${charges}/${maxCharges}   bacteria: ${bacteriaCount}`,
+      `charges: ${charges}/${maxCharges}   bacteria: ${bacteria.length}`,
     );
   }
 }

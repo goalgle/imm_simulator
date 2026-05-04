@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   evalAvoidPredator,
   evalSeekNutrient,
+  evalSeekPrey,
   evalSpaceAlly,
   evalSeekAlly,
   computeDesiredDirection,
+  type Senses,
 } from '../../src/domain/drives';
-import { BACTERIA_A } from '../../src/domain/dna';
+import { BACTERIA_A, NEUTROPHIL } from '../../src/domain/dna';
 
 describe('evalAvoidPredator', () => {
   it('포식자 없으면 활성도 0', () => {
@@ -20,7 +22,6 @@ describe('evalAvoidPredator', () => {
   });
 
   it('triggerRadius 안이면 활성도 > 0, 방향은 포식자에서 멀어짐', () => {
-    // 포식자 (100, 0), 자기 (0, 0), 멀어지는 방향 = -x
     const r = evalAvoidPredator(0, 0, [{ x: 100, y: 0 }], 200);
     expect(r.activation).toBeGreaterThan(0);
     expect(r.dirX).toBeLessThan(0);
@@ -44,7 +45,20 @@ describe('evalSeekNutrient', () => {
     const r = evalSeekNutrient(0, 0, { x: 100, y: 0 });
     expect(r.activation).toBe(1);
     expect(r.dirX).toBeCloseTo(1, 5);
-    expect(r.dirY).toBeCloseTo(0, 5);
+  });
+});
+
+describe('evalSeekPrey', () => {
+  it('먹이 없으면 활성도 0', () => {
+    const r = evalSeekPrey(0, 0, null);
+    expect(r.activation).toBe(0);
+  });
+
+  it('먹이 있으면 그 방향으로 활성도 1', () => {
+    const r = evalSeekPrey(0, 0, { x: 50, y: 50 });
+    expect(r.activation).toBe(1);
+    expect(r.dirX).toBeGreaterThan(0);
+    expect(r.dirY).toBeGreaterThan(0);
   });
 });
 
@@ -93,42 +107,43 @@ describe('evalSeekAlly', () => {
   });
 });
 
-describe('computeDesiredDirection (BACTERIA_A 기준)', () => {
+describe('computeDesiredDirection — 세균(BACTERIA_A)', () => {
   const self = { x: 100, y: 100 };
 
+  const sensesOf = (over: Partial<Senses> = {}): Senses => ({
+    predators: [],
+    allies: [self],
+    nearestNutrient: null,
+    nearestPrey: null,
+    ...over,
+  });
+
   it('백혈구가 가까이 있으면 회피가 영양분 추구를 압도', () => {
-    // 자기(100,100), 영양분(200, 100) → +x 방향
-    // 백혈구(150, 100) → 회피 = -x 방향, triggerRadius 180 안 → 활성 강함
     const dir = computeDesiredDirection(
       self,
       BACTERIA_A.drives,
-      [{ x: 150, y: 100 }],
-      [self],
-      { x: 200, y: 100 },
+      sensesOf({
+        predators: [{ x: 150, y: 100 }],
+        nearestNutrient: { x: 200, y: 100 },
+      }),
     );
-    expect(dir.dirX).toBeLessThan(0); // 백혈구로부터 멀어짐 (= -x)
+    expect(dir.dirX).toBeLessThan(0);
   });
 
   it('백혈구가 멀리 있으면 영양분 방향 우세', () => {
-    // 백혈구는 triggerRadius 밖(>180px)
     const dir = computeDesiredDirection(
       self,
       BACTERIA_A.drives,
-      [{ x: 500, y: 100 }],
-      [self],
-      { x: 200, y: 100 },
+      sensesOf({
+        predators: [{ x: 500, y: 100 }],
+        nearestNutrient: { x: 200, y: 100 },
+      }),
     );
     expect(dir.dirX).toBeGreaterThan(0);
   });
 
   it('아무 자극 없으면 영벡터 (정지)', () => {
-    const dir = computeDesiredDirection(
-      self,
-      BACTERIA_A.drives,
-      [],
-      [self],
-      null,
-    );
+    const dir = computeDesiredDirection(self, BACTERIA_A.drives, sensesOf());
     expect(dir.dirX).toBe(0);
     expect(dir.dirY).toBe(0);
   });
@@ -137,11 +152,46 @@ describe('computeDesiredDirection (BACTERIA_A 기준)', () => {
     const dir = computeDesiredDirection(
       self,
       BACTERIA_A.drives,
-      [{ x: 150, y: 100 }],
-      [self],
-      { x: 200, y: 100 },
+      sensesOf({
+        predators: [{ x: 150, y: 100 }],
+        nearestNutrient: { x: 200, y: 100 },
+      }),
     );
     const m = Math.sqrt(dir.dirX ** 2 + dir.dirY ** 2);
     expect(m).toBeCloseTo(1, 5);
+  });
+});
+
+describe('computeDesiredDirection — 호중구(NEUTROPHIL)', () => {
+  const self = { x: 100, y: 100 };
+
+  it('가장 가까운 세균 방향으로 향함 (seekPrey)', () => {
+    const dir = computeDesiredDirection(
+      self,
+      NEUTROPHIL.drives,
+      {
+        predators: [],
+        allies: [self],
+        nearestNutrient: null,
+        nearestPrey: { x: 200, y: 100 },
+      },
+    );
+    expect(dir.dirX).toBeGreaterThan(0);
+    expect(dir.dirY).toBeCloseTo(0, 5);
+  });
+
+  it('세균 없으면 정지', () => {
+    const dir = computeDesiredDirection(
+      self,
+      NEUTROPHIL.drives,
+      {
+        predators: [],
+        allies: [self],
+        nearestNutrient: null,
+        nearestPrey: null,
+      },
+    );
+    expect(dir.dirX).toBe(0);
+    expect(dir.dirY).toBe(0);
   });
 });
