@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>M0 Perf Spike - immune-simulator</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #0a0a0a; color: #eee; font-family: ui-monospace, monospace; overflow: hidden; }
+    #hud, #help {
+      position: fixed; left: 8px; padding: 10px 12px; background: rgba(0,0,0,0.65);
+      border-radius: 6px; z-index: 10; line-height: 1.55; font-size: 13px;
+    }
+    #hud  { top: 8px; }
+    #help { bottom: 8px; font-size: 12px; opacity: 0.85; }
+    .row { white-space: nowrap; }
+    .k { color: #8cf; }
+    .v { color: #fc8; min-width: 4ch; display: inline-block; }
+    .warn { color: #f66; }
+    .ok   { color: #6f6; }
+    .sep  { color: #555; margin: 0 6px; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="row">
+      <span class="k">FPS</span> <span class="v" id="fps">--</span>
+      <span class="sep">|</span> <span class="k">update()</span> <span class="v" id="upd">--</span> ms
+      <span class="sep">|</span> <span class="k">verdict</span> <span id="verdict">--</span>
+    </div>
+    <div class="row">
+      <span class="k">Cells</span> <span class="v" id="count">--</span>
+      <span class="sep">|</span> <span class="k">Verts</span> <span class="v" id="verts">--</span>
+      <span class="sep">|</span> <span class="k">Render</span> <span class="v" id="mode">--</span>
+      <span class="sep">|</span> <span class="k">DNA</span> <span class="v" id="dnaMode">--</span>
+      <span class="sep">|</span> <span class="k">Order</span> <span class="v" id="orderMode">--</span>
+    </div>
+  </div>
+  <div id="help">
+    <div class="row">
+      Count <span class="k">[1]</span>50 <span class="k">[2]</span>100 <span class="k">[3]</span>200 <span class="k">[4]</span>500 <span class="k">[5]</span>1000 <span class="k">[6]</span>3000 <span class="k">[7]</span>5000
+    </div>
+    <div class="row">
+      Render <span class="k">[G]</span>graphics-per-cell <span class="k">[B]</span>batched-graphics
+      <span class="sep">|</span> Verts <span class="k">[-]</span>/<span class="k">[=]</span> 8~128
+    </div>
+    <div class="row">
+      DNA <span class="k">[H]</span>homogeneous <span class="k">[M]</span>mixed(7종)
+      <span class="sep">|</span> Order <span class="k">[O]</span>cycle: random → y-sorted → color-grouped
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+  <script>
+  // ---------------------------------------------------------------------------
+  // M0 Performance Spike (확장판)
+  //
+  // 추가된 변수:
+  //   - DNA 다양성: 호중구 단일(homo) vs 7종 혼합(mixed)
+  //   - 그리기 순서: random / y-sorted / color-grouped
+  //
+  // 의도:
+  //   homo는 Phaser/WebGL 자동 batch에 유리한 best case.
+  //   mixed + random/y-sorted는 색이 자주 바뀌어 batch break 유발 → worst case에 가까움.
+  //   color-grouped는 같은 색끼리 묶어 그리므로 mixed라도 batch 회복 → 비교 baseline.
+  //
+  // 같은 기기에서 homo vs mixed 비율을 보면, 절대 FPS와 무관하게
+  // "본 게임에서 7종 섞였을 때 얼마나 떨어지는가"의 상대 비율이 나옴.
+  // ---------------------------------------------------------------------------
+
+  // 아이디어 기획서 §백혈구 종류별 파라미터 (base 값을 시각 확인 가능한 크기로 ~3.2배 스케일)
+  const DNAS = [
+    { name: 'Neutrophil',  base: 32, w1: { A: 0.30, n: 4, omega: 2.5 }, w2: { A: 0.20, n: 6, omega: 3.0 }, w3: { A: 0.10, n: 8, omega: 3.5 }, color: 0xE8B4D4 },
+    { name: 'T-cell',      base: 22, w1: { A: 0.25, n: 3, omega: 3.5 }, w2: { A: 0.15, n: 5, omega: 4.0 }, w3: { A: 0.10, n: 7, omega: 4.5 }, color: 0xA8D5E2 },
+    { name: 'B-cell',      base: 26, w1: { A: 0.20, n: 2, omega: 1.0 }, w2: { A: 0.15, n: 3, omega: 1.5 }, w3: { A: 0.10, n: 4, omega: 2.0 }, color: 0xB8C5E8 },
+    { name: 'NK',          base: 27, w1: { A: 0.35, n: 5, omega: 4.0 }, w2: { A: 0.25, n: 7, omega: 5.0 }, w3: { A: 0.15, n: 9, omega: 6.0 }, color: 0xC8A8D8 },
+    { name: 'Macrophage',  base: 48, w1: { A: 0.50, n: 2, omega: 0.8 }, w2: { A: 0.30, n: 3, omega: 1.2 }, w3: { A: 0.20, n: 5, omega: 1.5 }, color: 0xC8E8C8 },
+    { name: 'Eosinophil',  base: 32, w1: { A: 0.25, n: 4, omega: 1.8 }, w2: { A: 0.20, n: 6, omega: 2.2 }, w3: { A: 0.15, n: 8, omega: 2.5 }, color: 0xF8D8A8 },
+    { name: 'Basophil',    base: 29, w1: { A: 0.30, n: 3, omega: 2.0 }, w2: { A: 0.25, n: 5, omega: 2.5 }, w3: { A: 0.20, n: 7, omega: 3.0 }, color: 0xA8A8D8 },
+  ];
+
+  const ORDER_MODES = ['random', 'y-sorted', 'color-grouped'];
+  const TARGET_FPS  = 60;
+  const VERDICT_GO          = '<span class="ok">GO</span>';
+  const VERDICT_CONDITIONAL = '<span class="warn">CONDITIONAL</span>';
+  const VERDICT_NOGO        = '<span class="warn">NO-GO</span>';
+
+  class PerfScene extends Phaser.Scene {
+    constructor() {
+      super('PerfScene');
+      this.cells = [];
+      this.renderMode  = 'graphics-per-cell';
+      this.dnaMode     = 'homo';   // 'homo' | 'mixed'
+      this.orderMode   = 'random'; // 'random' | 'y-sorted' | 'color-grouped'
+      this.targetCount = 100;
+      this.vertexCount = 32;
+      this.batchedGraphics = null;
+      this.lastUpdateMs = 0;
+    }
+
+    create() {
+      const kb = this.input.keyboard;
+      kb.on('keydown-ONE',   () => this.setCount(50));
+      kb.on('keydown-TWO',   () => this.setCount(100));
+      kb.on('keydown-THREE', () => this.setCount(200));
+      kb.on('keydown-FOUR',  () => this.setCount(500));
+      kb.on('keydown-FIVE',  () => this.setCount(1000));
+      kb.on('keydown-SIX',   () => this.setCount(3000));
+      kb.on('keydown-SEVEN', () => this.setCount(5000));
+      kb.on('keydown-G',     () => this.setRenderMode('graphics-per-cell'));
+      kb.on('keydown-B',     () => this.setRenderMode('batched-graphics'));
+      kb.on('keydown-H',     () => this.setDnaMode('homo'));
+      kb.on('keydown-M',     () => this.setDnaMode('mixed'));
+      kb.on('keydown-O',     () => this.cycleOrderMode());
+      kb.on('keydown-MINUS', () => this.setVerts(Math.max(8, this.vertexCount - 8)));
+      kb.on('keydown-PLUS',  () => this.setVerts(Math.min(128, this.vertexCount + 8)));
+      kb.on('keydown-EQUALS',() => this.setVerts(Math.min(128, this.vertexCount + 8)));
+
+      this.respawn();
+    }
+
+    setCount(n)         { this.targetCount = n; this.respawn(); }
+    setRenderMode(m)    { this.renderMode  = m; this.respawn(); }
+    setDnaMode(m)       { this.dnaMode     = m; this.respawn(); }
+    cycleOrderMode()    {
+      const i = ORDER_MODES.indexOf(this.orderMode);
+      this.orderMode = ORDER_MODES[(i + 1) % ORDER_MODES.length];
+      this.respawn();
+    }
+    setVerts(v)         { this.vertexCount = v; this.updateHud(); }
+
+    respawn() {
+      for (const c of this.cells) if (c.gfx) c.gfx.destroy();
+      this.cells = [];
+      if (this.batchedGraphics) { this.batchedGraphics.destroy(); this.batchedGraphics = null; }
+      if (this.renderMode === 'batched-graphics') {
+        this.batchedGraphics = this.add.graphics();
+      }
+
+      const W = this.scale.width, H = this.scale.height;
+      const cells = [];
+      for (let i = 0; i < this.targetCount; i++) {
+        cells.push({
+          x: 60 + Math.random() * (W - 120),
+          y: 60 + Math.random() * (H - 120),
+          phase: Math.random() * Math.PI * 2,
+          dnaIndex: this.dnaMode === 'homo' ? 0 : Math.floor(Math.random() * DNAS.length),
+          gfx: null,
+        });
+      }
+
+      // 정렬 순서 = 그리기 순서 (per-cell은 add 순서, batched는 for 순서)
+      if      (this.orderMode === 'y-sorted')      cells.sort((a, b) => a.y - b.y);
+      else if (this.orderMode === 'color-grouped') cells.sort((a, b) => a.dnaIndex - b.dnaIndex);
+      // 'random' = 생성 순서 그대로
+
+      if (this.renderMode === 'graphics-per-cell') {
+        for (const c of cells) c.gfx = this.add.graphics();
+      }
+      this.cells = cells;
+      this.updateHud();
+    }
+
+    update() {
+      const t = this.time.now / 1000;
+      const start = performance.now();
+
+      if (this.renderMode === 'graphics-per-cell') {
+        for (const cell of this.cells) {
+          const dna = DNAS[cell.dnaIndex];
+          const pts = this.computePolygon(cell, dna, t);
+          cell.gfx.clear();
+          cell.gfx.fillStyle(dna.color, 1);
+          cell.gfx.fillPoints(pts, true);
+        }
+      } else {
+        const g = this.batchedGraphics;
+        g.clear();
+        let lastColor = -1;
+        for (const cell of this.cells) {
+          const dna = DNAS[cell.dnaIndex];
+          if (dna.color !== lastColor) {
+            g.fillStyle(dna.color, 1);
+            lastColor = dna.color;
+          }
+          const pts = this.computePolygon(cell, dna, t);
+          g.fillPoints(pts, true);
+        }
+      }
+
+      this.lastUpdateMs = performance.now() - start;
+      if (this.game.loop.frame % 16 === 0) this.updateHud();
+    }
+
+    computePolygon(cell, dna, t) {
+      const N = this.vertexCount;
+      const pts = new Array(N);
+      const base = dna.base;
+      const phase = cell.phase;
+      for (let i = 0; i < N; i++) {
+        const theta = (i / N) * Math.PI * 2;
+        const r = base
+          + base * dna.w1.A * Math.sin(dna.w1.n * theta + dna.w1.omega * t + phase)
+          + base * dna.w2.A * Math.sin(dna.w2.n * theta + dna.w2.omega * t + phase)
+          + base * dna.w3.A * Math.sin(dna.w3.n * theta + dna.w3.omega * t + phase);
+        pts[i] = { x: cell.x + Math.cos(theta) * r, y: cell.y + Math.sin(theta) * r };
+      }
+      return pts;
+    }
+
+    updateHud() {
+      const fps = this.game.loop.actualFps;
+      document.getElementById('fps').textContent       = fps.toFixed(1);
+      document.getElementById('count').textContent     = this.targetCount;
+      document.getElementById('mode').textContent      = this.renderMode;
+      document.getElementById('verts').textContent     = this.vertexCount;
+      document.getElementById('upd').textContent       = this.lastUpdateMs.toFixed(2);
+      document.getElementById('dnaMode').textContent   = this.dnaMode === 'homo' ? 'homogeneous(1종)' : 'mixed(7종)';
+      document.getElementById('orderMode').textContent = this.orderMode;
+
+      let verdict;
+      if      (fps >= TARGET_FPS - 2)  verdict = VERDICT_GO;
+      else if (fps >= 30)              verdict = VERDICT_CONDITIONAL;
+      else                             verdict = VERDICT_NOGO;
+      document.getElementById('verdict').innerHTML = verdict;
+    }
+  }
+
+  new Phaser.Game({
+    type: Phaser.WEBGL,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    backgroundColor: '#0a0a0a',
+    scene: PerfScene,
+    scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH },
+  });
+  </script>
+</body>
+</html>

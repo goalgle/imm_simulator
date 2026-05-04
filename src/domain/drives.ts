@@ -1,0 +1,150 @@
+// 행동 동기(drives) 평가 — 시스템 구현 기획서 §2.4.2 (M2.2 부드러운 우선순위).
+//
+// 각 drive 는 (단위 방향 벡터, 활성도 0~1) 을 반환.
+// computeDesiredDirection 이 모든 drive 의 가중 합 후 정규화 → 최종 단위 방향.
+//
+// 우선순위는 별도 데이터가 아니라 weight 의 크기로 자연스럽게 표현됨.
+//   1순위 = 큰 weight, 3순위 = 작은 weight.
+//
+// 모든 형질이 숫자라 바이러스 변이가 산술 연산으로 가능 (weight ×= 1.3 등).
+//
+// 이 파일은 Phaser 의존 없음 (단위 테스트 가능).
+
+import type { Drives } from './dna';
+
+// 게임: 위치만 가지면 되는 최소 인터페이스. WhiteCell, Bacteria, Nutrient 모두 적용 가능.
+export type Positioned = {
+  readonly x: number;
+  readonly y: number;
+};
+
+// 게임: drive 1개 평가 결과. dirX/dirY 는 단위 벡터 (또는 영벡터).
+//        activation 0 = 비활성, 1 = 최대.
+export type DriveEval = {
+  dirX: number;
+  dirY: number;
+  activation: number;
+};
+
+const ZERO: DriveEval = { dirX: 0, dirY: 0, activation: 0 };
+
+// 게임: 가장 가까운 후보까지의 (거리, dx, dy). 후보 없으면 null.
+function nearest(
+  selfX: number,
+  selfY: number,
+  candidates: readonly Positioned[],
+  excludeSelf?: Positioned,
+): { dist: number; dx: number; dy: number } | null {
+  let best: { dist: number; dx: number; dy: number } | null = null;
+  let bestDist2 = Infinity;
+  for (const c of candidates) {
+    if (excludeSelf !== undefined && c === excludeSelf) continue;
+    const dx = c.x - selfX;
+    const dy = c.y - selfY;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestDist2) {
+      bestDist2 = d2;
+      best = { dist: Math.sqrt(d2), dx, dy };
+    }
+  }
+  return best;
+}
+
+// 게임: avoidPredator — 가장 가까운 포식자에서 멀어지는 방향.
+//        triggerRadius 안에 있을 때만 활성, 가까울수록 활성도 ↑ (선형).
+export function evalAvoidPredator(
+  selfX: number,
+  selfY: number,
+  predators: readonly Positioned[],
+  triggerRadius: number,
+): DriveEval {
+  const n = nearest(selfX, selfY, predators);
+  if (n === null) return ZERO;
+  if (n.dist > triggerRadius) return ZERO;
+  if (n.dist < 0.001) return { dirX: 0, dirY: 0, activation: 1 };
+  // 게임: 멀어지는 방향 = self - predator = -dx
+  return {
+    dirX: -n.dx / n.dist,
+    dirY: -n.dy / n.dist,
+    activation: 1 - n.dist / triggerRadius,
+  };
+}
+
+// 게임: seekNutrient — 가장 가까운 영양분 방향. 있으면 활성도 1.
+export function evalSeekNutrient(
+  selfX: number,
+  selfY: number,
+  nutrient: Positioned | null,
+): DriveEval {
+  if (nutrient === null) return ZERO;
+  const dx = nutrient.x - selfX;
+  const dy = nutrient.y - selfY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 0.001) return { dirX: 0, dirY: 0, activation: 1 };
+  return { dirX: dx / dist, dirY: dy / dist, activation: 1 };
+}
+
+// 게임: spaceAlly — 가장 가까운 동족이 comfortRadius 안에 있으면 멀어지는 방향.
+//        가까울수록 활성도 ↑.
+export function evalSpaceAlly(
+  selfX: number,
+  selfY: number,
+  allies: readonly Positioned[],
+  self: Positioned,
+  comfortRadius: number,
+): DriveEval {
+  const n = nearest(selfX, selfY, allies, self);
+  if (n === null) return ZERO;
+  if (n.dist > comfortRadius) return ZERO;
+  if (n.dist < 0.001) return { dirX: 0, dirY: 0, activation: 1 };
+  return {
+    dirX: -n.dx / n.dist,
+    dirY: -n.dy / n.dist,
+    activation: 1 - n.dist / comfortRadius,
+  };
+}
+
+// 게임: seekAlly — 가장 가까운 동족 방향. 있으면 활성도 1.
+export function evalSeekAlly(
+  selfX: number,
+  selfY: number,
+  allies: readonly Positioned[],
+  self: Positioned,
+): DriveEval {
+  const n = nearest(selfX, selfY, allies, self);
+  if (n === null) return ZERO;
+  if (n.dist < 0.001) return { dirX: 0, dirY: 0, activation: 1 };
+  return { dirX: n.dx / n.dist, dirY: n.dy / n.dist, activation: 1 };
+}
+
+// 게임: 모든 drive 의 가중 합 → 정규화된 목표 방향.
+//        weight=0 인 drive 는 자연스럽게 무시됨 (값 0 곱).
+//        활성도 0 인 drive 도 무시됨.
+//        결과 벡터 크기가 0 에 가까우면 (모든 drive 무활성) 정지 의도 (영벡터).
+export function computeDesiredDirection(
+  self: Positioned,
+  drives: Drives,
+  predators: readonly Positioned[],
+  allies: readonly Positioned[],
+  nearestNutrient: Positioned | null,
+): { dirX: number; dirY: number } {
+  const ap = evalAvoidPredator(self.x, self.y, predators, drives.avoidPredator.triggerRadius);
+  const sn = evalSeekNutrient(self.x, self.y, nearestNutrient);
+  const sp = evalSpaceAlly(self.x, self.y, allies, self, drives.spaceAlly.comfortRadius);
+  const sa = evalSeekAlly(self.x, self.y, allies, self);
+
+  let dx = 0;
+  let dy = 0;
+  dx += ap.dirX * ap.activation * drives.avoidPredator.weight;
+  dy += ap.dirY * ap.activation * drives.avoidPredator.weight;
+  dx += sn.dirX * sn.activation * drives.seekNutrient.weight;
+  dy += sn.dirY * sn.activation * drives.seekNutrient.weight;
+  dx += sp.dirX * sp.activation * drives.spaceAlly.weight;
+  dy += sp.dirY * sp.activation * drives.spaceAlly.weight;
+  dx += sa.dirX * sa.activation * drives.seekAlly.weight;
+  dy += sa.dirY * sa.activation * drives.seekAlly.weight;
+
+  const m = Math.sqrt(dx * dx + dy * dy);
+  if (m < 0.001) return { dirX: 0, dirY: 0 };
+  return { dirX: dx / m, dirY: dy / m };
+}

@@ -1,0 +1,22 @@
+{
+  "name": "immune-simulator",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "함수 기반 절차적 형태로 표현되는 면역 시뮬레이션 게임",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "phaser": "^3.80.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}
