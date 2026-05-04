@@ -21,10 +21,17 @@ const FRICTION = 1.5;
 //        0.5 = 부드럽게 튕김.
 const WALL_BOUNCE = 0.5;
 
+// 게임: 충격파 자극으로 인한 시각 활성도(shockResponse) 의 회복 속도. 1/sec.
+//        값 3.0 → 약 1초에 95% 회복.
+const SHOCK_RECOVERY = 3.0;
+
 export class WhiteCell {
   private handle: CellRenderHandle;
   vx = 0;
   vy = 0;
+  // 게임: 충격파 임펄스로 인한 시각 활성도 (0~1). 매 프레임 지수 감쇠.
+  //        ShockwaveSystem 이 임펄스 누적 시 applyShockImpulse 로 증가시킴.
+  private shockResponse = 0;
 
   constructor(
     public readonly dna: DNA,
@@ -35,6 +42,12 @@ export class WhiteCell {
   ) {
     this.handle = renderer.create(dna, x, y);
     this.handle.setPhase(phase);
+  }
+
+  // 게임: ShockwaveSystem 이 임펄스 적용 시 호출. amount 는 이번 프레임에 받은
+  //        임펄스 정규화량 (0~∞). 누적되며 1.0 으로 캡.
+  applyShockImpulse(amount: number): void {
+    this.shockResponse = Math.min(1, this.shockResponse + amount);
   }
 
   // 게임: 매 프레임 씬에서 호출.
@@ -67,6 +80,11 @@ export class WhiteCell {
       this.y = bounds.height - r;
       if (this.vy > 0) this.vy = -this.vy * WALL_BOUNCE;
     }
+
+    // 게임: 시각 활성도 감쇠 + 핸들 반영
+    this.shockResponse *= Math.exp(-SHOCK_RECOVERY * dt);
+    if (this.shockResponse < 0.001) this.shockResponse = 0;
+    this.handle.setActivation(this.shockResponse);
 
     this.handle.setPosition(this.x, this.y);
     this.handle.update(t);

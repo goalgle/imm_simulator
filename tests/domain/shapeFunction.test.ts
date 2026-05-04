@@ -30,6 +30,20 @@ describe('evaluateRadius', () => {
       expect(r).toBeLessThan(base * (1 + maxAmp));
     }
   });
+
+  it('ampBoost > 1 일 때 변형 폭이 base 대비 증가 (base 자체는 동일)', () => {
+    // θ=π/4, t=1 — sin 항들이 비제로일 때
+    const r1 = evaluateRadius(NEUTROPHIL, Math.PI / 4, 1, 0, 1);
+    const r2 = evaluateRadius(NEUTROPHIL, Math.PI / 4, 1, 0, 1.5);
+    const base = NEUTROPHIL.shape.base;
+    // 변형 = r - base, ampBoost 적용 시 비례 증가
+    expect(Math.abs(r2 - base)).toBeCloseTo(Math.abs(r1 - base) * 1.5, 5);
+  });
+
+  it('ampBoost = 0 이면 형태가 base 원으로 (sin 항 0)', () => {
+    const r = evaluateRadius(NEUTROPHIL, Math.PI / 3, 0.5, 0, 0);
+    expect(r).toBe(NEUTROPHIL.shape.base);
+  });
 });
 
 describe('generatePolygon', () => {
@@ -40,7 +54,7 @@ describe('generatePolygon', () => {
 
   it('out 버퍼를 넘기면 같은 배열에 갱신 (재할당 없음)', () => {
     const buf = Array.from({ length: 32 }, () => ({ x: 0, y: 0 }));
-    const result = generatePolygon(NEUTROPHIL, 0, 32, 0, buf);
+    const result = generatePolygon(NEUTROPHIL, 0, 32, 0, 1, buf);
     expect(result).toBe(buf);
     expect(result[0]).toBe(buf[0]);
   });

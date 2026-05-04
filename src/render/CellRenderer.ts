@@ -7,7 +7,7 @@
 
 import type { DNA } from '../domain/dna';
 
-// 게임: 한 세포의 렌더 핸들. 위치/위상/스케일/시간 갱신과 파괴를 책임.
+// 게임: 한 세포의 렌더 핸들. 위치/위상/스케일/활성도/시간 갱신과 파괴를 책임.
 //        DNA 자체는 핸들 생성 시 결정되며 이후 불변 (변이는 새 핸들 생성으로 처리).
 export interface CellRenderHandle {
   setPosition(x: number, y: number): void;
@@ -15,6 +15,9 @@ export interface CellRenderHandle {
   // 게임: 시각 스케일 배율 (1.0 = 원본). 분열 애니메이션, 약화, 흡수 직후 팽창 등에 사용.
   //        DNA 변경 없이 표시 크기만 일시 변경.
   setScale(scale: number): void;
+  // 게임: 일시 활성도 (0 = 평상, 1 = 최대 자극). 충격파/접촉으로 받은 자극의 강도.
+  //        렌더러가 이를 색(채도/명도) + 형태 떨림 진폭에 반영하여 시각 강조.
+  setActivation(level: number): void;
   // 게임: 매 프레임 호출. t 는 게임 시작 후 경과 시간(초).
   update(t: number): void;
   destroy(): void;

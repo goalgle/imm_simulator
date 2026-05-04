@@ -9,6 +9,10 @@ import type { Shockwave } from '../domain/shockwave';
 import { isShockwaveAlive, shockwaveImpulse } from '../domain/shockwave';
 import type { WhiteCell } from '../entities/WhiteCell';
 
+// 게임: 임펄스 크기 → 시각 활성도 환산 게인.
+//        값이 클수록 약한 충격에도 시각 반응이 강함.
+const SHOCK_ACTIVATION_GAIN = 0.1;
+
 // 게임: 시스템 초기 설정.
 //   maxCharges          : 동시 보유 가능한 최대 발수
 //   rechargeIntervalSec : 1발 충전에 걸리는 시간(초)
@@ -67,18 +71,26 @@ export class ShockwaveSystem {
 
   // 게임: 모든 활성 파동의 임펄스를 합산하여 세포 속도에 적용.
   //        한 세포가 여러 파동의 영향권에 동시에 있어도 각각 합산됨.
+  //        임펄스 강도는 시각 활성도(shockResponse) 에도 비례 누적 — 강한 충격 → 강한 반응.
   applyToCells(cells: readonly WhiteCell[], t: number, dt: number): void {
     if (this.waves.length === 0) return;
     for (const cell of cells) {
       let dvx = 0;
       let dvy = 0;
+      let impulseMag = 0;
       for (const wave of this.waves) {
         const imp = shockwaveImpulse(wave, cell.x, cell.y, t);
         dvx += imp.dvx;
         dvy += imp.dvy;
+        impulseMag += Math.sqrt(imp.dvx * imp.dvx + imp.dvy * imp.dvy);
       }
       cell.vx += dvx * dt;
       cell.vy += dvy * dt;
+      if (impulseMag > 0) {
+        // 게임: 정규화 — 충격파 power(600 px/s²) × dt(0.016) ≈ 10 정도가 1프레임 임펄스의 큰 값.
+        //        이를 0~1 활성도로 환산: × SHOCK_ACTIVATION_GAIN.
+        cell.applyShockImpulse(impulseMag * dt * SHOCK_ACTIVATION_GAIN);
+      }
     }
   }
 
