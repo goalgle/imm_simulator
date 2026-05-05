@@ -1,0 +1,207 @@
+// 팀 관리 시스템 (M5.1 영입/탈퇴/해체 + M5.3 모드 결정).
+//
+// 매 프레임:
+//   1) 죽은 커맨더의 팀 해체 (멤버는 무소속 복귀)
+//   2) 살아있는 일반 세균이 어느 팀에도 속하지 않은 경우, 가까운 커맨더 팀에 영입 시도
+//   3) 멤버가 currentCommandRange × LEAVE_FACTOR 이상 멀어지면 탈퇴
+//   4) 모드 결정: 시야 내 가장 가까운 호중구 + 팀 총 HP > 호중구 HP × 우세계수 → aggressive
+
+import type { Bacteria } from '../entities/Bacteria';
+import type { WhiteCell } from '../entities/WhiteCell';
+
+// 게임: 멤버가 지휘범위 × 이 비율 이상 벗어나면 자동 탈퇴.
+//        영입 거리(commandRange) 보다 살짝 넓게 두어 경계에서 깜빡이는 영입/탈퇴 방지.
+const LEAVE_FACTOR = 1.5;
+
+// 게임: 공격 모드 진입 우세계수. 팀 총 HP > 호중구 HP × 이 값 이면 공격.
+//        1.5 = 50% 우세 마진. 박빙/약간 우세는 방어, 명확히 우세할 때만 공격.
+const ATTACK_HP_THRESHOLD = 1.5;
+
+export type TeamMode = 'defensive' | 'aggressive';
+
+export type Team = {
+  commander: Bacteria;
+  members: Bacteria[];
+  mode: TeamMode;
+  // 게임: 공격 명령의 대상 호중구. defensive 면 null.
+  //        WhiteCell 객체 자체를 들고 있어서 그가 죽거나 사라지면 자동 해제됨.
+  attackTarget: WhiteCell | null;
+};
+
+export class TeamSystem {
+  private teams: Team[] = [];
+  // 게임: 빠른 lookup. bacteria → team 매핑.
+  private memberToTeam = new Map<Bacteria, Team>();
+
+  // 게임: 매 프레임 호출.
+  //   bacteria   : 모든 세균 (커맨더 + 일반). 죽은 것 포함 가능 — 내부에서 isDead 체크.
+  //   whiteCells : 모든 백혈구 (살아있는 것만 의미 있음 — 시체는 자동 제외).
+  update(bacteria: readonly Bacteria[], whiteCells: readonly WhiteCell[]): void {
+    this.removeDeadCommandersAndMembers();
+    this.ensureTeamsForCommanders(bacteria);
+    this.dropMembersOutOfRange();
+    this.recruitNewMembers(bacteria);
+    this.decideTeamModes(whiteCells);
+  }
+
+  // 게임: 커맨더가 죽거나 멤버가 죽으면 정리.
+  private removeDeadCommandersAndMembers(): void {
+    // 죽은 커맨더 팀 해체 — 멤버 매핑도 같이 제거.
+    const aliveTeams: Team[] = [];
+    for (const team of this.teams) {
+      if (team.commander.isDead()) {
+        for (const m of team.members) this.memberToTeam.delete(m);
+        continue;
+      }
+      // 죽은 멤버는 팀에서 제거.
+      const liveMembers: Bacteria[] = [];
+      for (const m of team.members) {
+        if (m.isDead()) {
+          this.memberToTeam.delete(m);
+          continue;
+        }
+        liveMembers.push(m);
+      }
+      team.members = liveMembers;
+      aliveTeams.push(team);
+    }
+    this.teams = aliveTeams;
+  }
+
+  // 게임: 살아있는 커맨더가 팀이 없으면 빈 팀 생성.
+  private ensureTeamsForCommanders(bacteria: readonly Bacteria[]): void {
+    for (const b of bacteria) {
+      if (b.isDead()) continue;
+      if (!b.isCommander()) continue;
+      if (this.teams.some((t) => t.commander === b)) continue;
+      this.teams.push({
+        commander: b,
+        members: [],
+        mode: 'defensive',
+        attackTarget: null,
+      });
+    }
+  }
+
+  // 게임: 멤버가 너무 멀리 갔으면 탈퇴.
+  private dropMembersOutOfRange(): void {
+    for (const team of this.teams) {
+      const cx = team.commander.x;
+      const cy = team.commander.y;
+      const limit = team.commander.currentCommandRange * LEAVE_FACTOR;
+      const limit2 = limit * limit;
+      const stay: Bacteria[] = [];
+      for (const m of team.members) {
+        const dx = m.x - cx;
+        const dy = m.y - cy;
+        if (dx * dx + dy * dy > limit2) {
+          this.memberToTeam.delete(m);
+          continue;
+        }
+        stay.push(m);
+      }
+      team.members = stay;
+    }
+  }
+
+  // 게임: 빈자리 있는 팀이 currentCommandRange 안의 무소속 일반 세균을 영입.
+  //        한 세균은 한 팀에만 속함. 이미 다른 팀 소속이면 갈아타기 X (단순화).
+  private recruitNewMembers(bacteria: readonly Bacteria[]): void {
+    for (const team of this.teams) {
+      const max = team.commander.currentMaxTeamSize();
+      if (team.members.length >= max) continue;
+
+      const cx = team.commander.x;
+      const cy = team.commander.y;
+      const range = team.commander.currentCommandRange;
+      const range2 = range * range;
+
+      for (const b of bacteria) {
+        if (team.members.length >= max) break;
+        if (b.isDead()) continue;
+        if (b.isCommander()) continue;
+        if (this.memberToTeam.has(b)) continue;
+        const dx = b.x - cx;
+        const dy = b.y - cy;
+        if (dx * dx + dy * dy > range2) continue;
+        team.members.push(b);
+        this.memberToTeam.set(b, team);
+      }
+    }
+  }
+
+  // 게임: 각 팀의 mode/attackTarget 갱신.
+  //   - 시야(visionRange) 안 가장 가까운 살아있는 호중구 후보 선정
+  //   - 팀 총 HP (커맨더 + 멤버, 살아있는 것만) > 호중구 HP × 1.2 → aggressive
+  //   - 그 외 → defensive (attackTarget=null)
+  private decideTeamModes(whiteCells: readonly WhiteCell[]): void {
+    for (const team of this.teams) {
+      const cmd = team.commander;
+
+      // 게임: "팀으로 이루어진" 조건 — 멤버가 baseTeamSize 이상 모여야 공격 모드 가능.
+      //        그 미만이면 자동 방어 (커맨더 단독 / 소규모 팀은 회피).
+      const minMembers = cmd.dna.command.baseTeamSize;
+      if (team.members.length < minMembers) {
+        team.mode = 'defensive';
+        team.attackTarget = null;
+        continue;
+      }
+
+      const cx = cmd.x;
+      const cy = cmd.y;
+      const visionR = cmd.currentVisionRange;
+      const visionR2 = visionR * visionR;
+
+      // 게임: 시야 내 가장 가까운 살아있는 호중구.
+      let nearest: WhiteCell | null = null;
+      let bestDist2 = Infinity;
+      for (const w of whiteCells) {
+        if (w.isDead()) continue;
+        const dx = w.x - cx;
+        const dy = w.y - cy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > visionR2) continue;
+        if (d2 < bestDist2) {
+          bestDist2 = d2;
+          nearest = w;
+        }
+      }
+
+      if (nearest === null) {
+        team.mode = 'defensive';
+        team.attackTarget = null;
+        continue;
+      }
+
+      // 게임: 팀 총 HP — currentHp 는 직접 못 가져옴(private). hpRatio × maxHp 사용.
+      let teamHp = cmd.hpRatio() * cmd.dna.combat.maxHp;
+      for (const m of team.members) {
+        if (m.isDead()) continue;
+        teamHp += m.hpRatio() * m.dna.combat.maxHp;
+      }
+      const enemyHp = nearest.hpRatio() * nearest.dna.combat.maxHp;
+
+      if (teamHp > enemyHp * ATTACK_HP_THRESHOLD) {
+        team.mode = 'aggressive';
+        team.attackTarget = nearest;
+      } else {
+        team.mode = 'defensive';
+        team.attackTarget = null;
+      }
+    }
+  }
+
+  // 게임: 외부 조회용.
+  getTeams(): readonly Team[] {
+    return this.teams;
+  }
+
+  getTeamFor(bacteria: Bacteria): Team | null {
+    return this.memberToTeam.get(bacteria) ?? null;
+  }
+
+  // 게임: 커맨더 자신이 속한 팀 (자기 팀).
+  getTeamOfCommander(commander: Bacteria): Team | null {
+    return this.teams.find((t) => t.commander === commander) ?? null;
+  }
+}

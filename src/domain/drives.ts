@@ -33,6 +33,10 @@ export type Senses = {
   allies: readonly Positioned[];       // 동족 (자기 자신 포함 가능)
   nearestNutrient: Positioned | null;  // 영양분 (세균이 사용)
   nearestPrey: Positioned | null;      // 먹이 (백혈구가 사용 — 세균)
+  // 게임: 자기가 속한 팀의 지휘관. 무소속이면 null.
+  //        controlRadius 는 지휘관의 currentCommandRange — 영양분 흡수로 늘어나는 동적 값.
+  //        followCommander drive 가 이 거리 이내일 때 활성도 0 (자유 행동), 밖이면 끌어당김.
+  commander: { x: number; y: number; controlRadius: number } | null;
 };
 
 const ZERO: DriveEval = { dirX: 0, dirY: 0, activation: 0 };
@@ -128,6 +132,29 @@ export function evalSpaceAlly(
   };
 }
 
+// 게임: followCommander — 지휘관이 controlRadius 안에 있으면 자유(활성도 0),
+//        그 밖이면 지휘관 쪽으로 끌림. 거리가 멀수록 활성도 ↑.
+//        (dist - controlRadius) / controlRadius — 1 배 거리에서 활성도 1.
+export function evalFollowCommander(
+  selfX: number,
+  selfY: number,
+  commander: { x: number; y: number; controlRadius: number } | null,
+): DriveEval {
+  if (commander === null) return ZERO;
+  const dx = commander.x - selfX;
+  const dy = commander.y - selfY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 0.001) return ZERO;
+  if (dist <= commander.controlRadius) return ZERO;
+  if (commander.controlRadius <= 0) {
+    // 게임: 잘못된 입력 방어. controlRadius 가 0 이면 무조건 끌림.
+    return { dirX: dx / dist, dirY: dy / dist, activation: 1 };
+  }
+  const overflow = (dist - commander.controlRadius) / commander.controlRadius;
+  const activation = overflow > 1 ? 1 : overflow;
+  return { dirX: dx / dist, dirY: dy / dist, activation };
+}
+
 // 게임: seekAlly — 가장 가까운 동족 방향. 있으면 활성도 1.
 export function evalSeekAlly(
   selfX: number,
@@ -155,6 +182,7 @@ export function computeDesiredDirection(
   const sprey = evalSeekPrey(self.x, self.y, senses.nearestPrey);
   const sp = evalSpaceAlly(self.x, self.y, senses.allies, self, drives.spaceAlly.comfortRadius);
   const sa = evalSeekAlly(self.x, self.y, senses.allies, self);
+  const fc = evalFollowCommander(self.x, self.y, senses.commander);
 
   let dx = 0;
   let dy = 0;
@@ -168,6 +196,8 @@ export function computeDesiredDirection(
   dy += sp.dirY * sp.activation * drives.spaceAlly.weight;
   dx += sa.dirX * sa.activation * drives.seekAlly.weight;
   dy += sa.dirY * sa.activation * drives.seekAlly.weight;
+  dx += fc.dirX * fc.activation * drives.followCommander.weight;
+  dy += fc.dirY * fc.activation * drives.followCommander.weight;
 
   const m = Math.sqrt(dx * dx + dy * dy);
   if (m < 0.001) return { dirX: 0, dirY: 0 };

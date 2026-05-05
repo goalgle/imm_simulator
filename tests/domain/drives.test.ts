@@ -5,6 +5,7 @@ import {
   evalSeekPrey,
   evalSpaceAlly,
   evalSeekAlly,
+  evalFollowCommander,
   computeDesiredDirection,
   type Senses,
 } from '../../src/domain/drives';
@@ -107,6 +108,37 @@ describe('evalSeekAlly', () => {
   });
 });
 
+describe('evalFollowCommander', () => {
+  it('지휘관 없으면 활성도 0', () => {
+    const r = evalFollowCommander(0, 0, null);
+    expect(r.activation).toBe(0);
+  });
+
+  it('controlRadius 이내면 활성도 0 (자유)', () => {
+    const r = evalFollowCommander(0, 0, { x: 50, y: 0, controlRadius: 100 });
+    expect(r.activation).toBe(0);
+  });
+
+  it('controlRadius 밖이면 지휘관 쪽으로 끌림', () => {
+    const r = evalFollowCommander(0, 0, { x: 200, y: 0, controlRadius: 100 });
+    expect(r.activation).toBeGreaterThan(0);
+    expect(r.dirX).toBeCloseTo(1, 5);
+    expect(r.dirY).toBeCloseTo(0, 5);
+  });
+
+  it('멀어질수록 활성도 ↑, controlRadius × 2 거리에서 1', () => {
+    const r1 = evalFollowCommander(0, 0, { x: 150, y: 0, controlRadius: 100 });
+    const r2 = evalFollowCommander(0, 0, { x: 250, y: 0, controlRadius: 100 });
+    expect(r2.activation).toBeGreaterThan(r1.activation);
+    expect(r2.activation).toBeCloseTo(1, 5);
+  });
+
+  it('지휘관과 같은 위치면 활성도 0 (방향 미정)', () => {
+    const r = evalFollowCommander(50, 50, { x: 50, y: 50, controlRadius: 100 });
+    expect(r.activation).toBe(0);
+  });
+});
+
 describe('computeDesiredDirection — 세균(BACTERIA_A)', () => {
   const self = { x: 100, y: 100 };
 
@@ -115,6 +147,7 @@ describe('computeDesiredDirection — 세균(BACTERIA_A)', () => {
     allies: [self],
     nearestNutrient: null,
     nearestPrey: null,
+    commander: null,
     ...over,
   });
 
@@ -174,6 +207,7 @@ describe('computeDesiredDirection — 호중구(NEUTROPHIL)', () => {
         allies: [self],
         nearestNutrient: null,
         nearestPrey: { x: 200, y: 100 },
+        commander: null,
       },
     );
     expect(dir.dirX).toBeGreaterThan(0);
@@ -189,6 +223,7 @@ describe('computeDesiredDirection — 호중구(NEUTROPHIL)', () => {
         allies: [self],
         nearestNutrient: null,
         nearestPrey: null,
+        commander: null,
       },
     );
     expect(dir.dirX).toBe(0);

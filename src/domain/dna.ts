@@ -15,6 +15,20 @@ export type Wave = {
   omega: number;
 };
 
+// 게임: 지휘(command) 형질. 모든 종이 동일 구조 보유, 일반 종은 무영향(0) 값.
+//   baseTeamSize=0 인 엔티티는 "지휘관 아님" 으로 판정. >=1 이면 지휘관.
+//   영양분 흡수 시 시야/지휘범위 ↑ + 레벨업 (분열 X — 별도 분기).
+//   max team size = baseTeamSize + floor(level / teamSizeStep).
+export type Command = {
+  visionRange: number;        // 시야 (호중구 인식 거리)
+  commandRange: number;       // 지휘 범위 (멤버 영입/유지 거리)
+  visionGrowth: number;       // 흡수 1회당 시야 +
+  commandGrowth: number;      // 흡수 1회당 지휘범위 +
+  baseTeamSize: number;       // 0 = 지휘관 아님
+  teamSizeStep: number;       // 몇 레벨마다 팀원 +1 (예: 3)
+  levelUpAbsorbCount: number; // 영양분 몇 개 흡수 = 1 레벨업
+};
+
 // 게임: 행동 동기(drive) 의 표준 집합.
 // 모든 종(백혈구/세균) 이 동일 구조를 가지며, weight=0 이면 비활성과 동일.
 // 새 drive 가 추가되면 모든 프리셋에 0 으로 반영하면 됨.
@@ -29,6 +43,8 @@ export type Drives = {
   spaceAlly: { weight: number; comfortRadius: number };
   // 가장 가까운 동족으로 향함 (군집형). 항상 활성.
   seekAlly: { weight: number };
+  // 자기 팀 지휘관 쪽으로. 지휘범위 안에서는 활성도 0 (자유), 밖에서 끌림.
+  followCommander: { weight: number };
 };
 
 // 게임: 세포 1개의 정본 DNA.
@@ -37,6 +53,8 @@ export type Drives = {
 //   behavior : target 1=적, 0=무관심, -1=아군 / speed 이동 px/s / contact 접촉 시 간섭 강도
 //              turnRate 1/sec — 클수록 desired velocity 로 빠르게 수렴 (관성 ↔ 즉시 전환)
 //   drives   : 행동 동기 가중치 (위 Drives 정의)
+//   combat   : maxHp 최대 체력 / attack 단위 시간당 가하는 데미지 (M3.4 전투에서 사용)
+//              currentHp 는 엔티티 상태이지 DNA 가 아님 — DNA 는 종족 형질만.
 //   meta     : recovery 회복 속도 / divide 분열 확률
 export type DNA = {
   shape: {
@@ -57,6 +75,11 @@ export type DNA = {
     turnRate: number;
   };
   drives: Drives;
+  combat: {
+    maxHp: number;
+    attack: number;
+  };
+  command: Command;
   meta: {
     recovery: number;
     divide: number;
@@ -80,13 +103,58 @@ export const NEUTROPHIL: DNA = {
   color: { h: 322, s: 53, l: 81 },
   behavior: { target: 1.0, speed: 15, contact: 0.35, turnRate: 1.5 },
   drives: {
-    avoidPredator: { weight: 0, triggerRadius: 0 },
-    seekNutrient:  { weight: 0 },
-    seekPrey:      { weight: 1.0 },
-    spaceAlly:     { weight: 0, comfortRadius: 0 },
-    seekAlly:      { weight: 0 },
+    avoidPredator:   { weight: 0, triggerRadius: 0 },
+    seekNutrient:    { weight: 0 },
+    seekPrey:        { weight: 1.0 },
+    spaceAlly:       { weight: 0, comfortRadius: 0 },
+    seekAlly:        { weight: 0 },
+    followCommander: { weight: 0 },
+  },
+  combat: { maxHp: 100, attack: 20 },
+  command: {
+    visionRange: 0,
+    commandRange: 0,
+    visionGrowth: 0,
+    commandGrowth: 0,
+    baseTeamSize: 0,
+    teamSizeStep: 0,
+    levelUpAbsorbCount: 0,
   },
   meta: { recovery: 0.6, divide: 0.0 },
+};
+
+// 게임: 슈퍼 호중구 프리셋. M5.4c — 대식세포가 호중구 사체 점수 ≥ 40 모았을 때 생산.
+//   - 일반 호중구의 강화판: 더 크고 빠르고 강함
+//   - 색조 확연히 다름 (진한 보라) — 시각적 식별 우선
+//   - drives 는 일반과 동일 (seekPrey 추적)
+export const NEUTROPHIL_SUPER: DNA = {
+  shape: {
+    base: 40,
+    w1: { A: 0.30, n: 4, omega: 2.5 },
+    w2: { A: 0.20, n: 6, omega: 3.0 },
+    w3: { A: 0.10, n: 8, omega: 3.5 },
+  },
+  color: { h: 280, s: 65, l: 55 },
+  behavior: { target: 1.0, speed: 32, contact: 0.4, turnRate: 2.0 },
+  drives: {
+    avoidPredator:   { weight: 0, triggerRadius: 0 },
+    seekNutrient:    { weight: 0 },
+    seekPrey:        { weight: 1.0 },
+    spaceAlly:       { weight: 0, comfortRadius: 0 },
+    seekAlly:        { weight: 0 },
+    followCommander: { weight: 0 },
+  },
+  combat: { maxHp: 180, attack: 30 },
+  command: {
+    visionRange: 0,
+    commandRange: 0,
+    visionGrowth: 0,
+    commandGrowth: 0,
+    baseTeamSize: 0,
+    teamSizeStep: 0,
+    levelUpAbsorbCount: 0,
+  },
+  meta: { recovery: 0.7, divide: 0.0 },
 };
 
 // 게임: 세균 종 A 프리셋. 시스템 구현 기획서 §2.4.
@@ -106,11 +174,98 @@ export const BACTERIA_A: DNA = {
   color: { h: 0, s: 0, l: 30 },
   behavior: { target: 0, speed: 30, contact: 0, turnRate: 3.0 },
   drives: {
-    avoidPredator: { weight: 1.0, triggerRadius: 180 },
-    seekNutrient:  { weight: 0.6 },
-    seekPrey:      { weight: 0 },
-    spaceAlly:     { weight: 0.3, comfortRadius: 50 },
-    seekAlly:      { weight: 0 },
+    avoidPredator:   { weight: 1.0, triggerRadius: 180 },
+    seekNutrient:    { weight: 0.6 },
+    seekPrey:        { weight: 0 },
+    spaceAlly:       { weight: 0.3, comfortRadius: 50 },
+    seekAlly:        { weight: 0 },
+    followCommander: { weight: 0.7 },  // M5.2: 팀에 속하면 지휘범위 밖에서 끌림
+  },
+  combat: { maxHp: 60, attack: 15 },
+  command: {
+    visionRange: 180,           // 일반 세균 시야 (호중구 인식 거리). avoidPredator.triggerRadius 와 동일.
+    commandRange: 0,
+    visionGrowth: 0,
+    commandGrowth: 0,
+    baseTeamSize: 0,            // 지휘관 아님
+    teamSizeStep: 0,
+    levelUpAbsorbCount: 0,
   },
   meta: { recovery: 0.3, divide: 0 },
+};
+
+// 게임: 세균 종 B (커맨더) 프리셋. 시스템 구현 기획서 §2.4 + M5 지휘관 메커닉.
+//   - 일반 세균보다 큼 (base 28 vs 18, 호중구 32) → 시각 즉시 식별
+//   - 짙은 자주 (회색 일반과 명확히 구분)
+//   - 시야 540 = 일반 ×3, 영양분 흡수 시 시야/지휘범위 ↑
+//   - 분열 X (대신 영양분 → 레벨업 → 팀원 증가)
+//   - HP/공격력 일반보다 강함
+export const BACTERIA_COMMANDER: DNA = {
+  shape: {
+    base: 28,
+    w1: { A: 0.18, n: 5, omega: 1.2 },
+    w2: { A: 0.12, n: 7, omega: 1.6 },
+    w3: { A: 0.08, n: 9, omega: 2.0 },
+  },
+  color: { h: 330, s: 50, l: 25 },
+  behavior: { target: 0, speed: 25, contact: 0, turnRate: 2.5 },
+  drives: {
+    // 회피 시야는 일반 세균과 동일(180) — 가까이 와야 도망. 그 안에 들어오면 강하게 회피(1.5).
+    // 공격 결정 시야는 별도 (command.visionRange = 540) — 멀리서 호중구 인지하여 팀 모드 결정.
+    // 두 시야가 분리되어 있어, 시야는 넓되 평소 영양분 추구를 방해하지 않음.
+    avoidPredator:   { weight: 1.5, triggerRadius: 180 },
+    seekNutrient:    { weight: 0.7 },
+    seekPrey:        { weight: 0 },
+    spaceAlly:       { weight: 0.2, comfortRadius: 60 },
+    seekAlly:        { weight: 0 },
+    followCommander: { weight: 0 },
+  },
+  combat: { maxHp: 120, attack: 25 },
+  command: {
+    visionRange: 540,
+    commandRange: 120,
+    visionGrowth: 15,
+    commandGrowth: 8,
+    baseTeamSize: 3,
+    teamSizeStep: 3,
+    levelUpAbsorbCount: 5,
+  },
+  meta: { recovery: 0.4, divide: 0 },
+};
+
+// 게임: 대식세포 (Macrophage) 프리셋. 시스템 구현 기획서 §M5.4.
+//   - 더 큰 크기 (base 40)
+//   - 초록 (아이디어 기획서 §대식세포)
+//   - 시체만 인터렉션, 호중구/세균/충격파 영향 X
+//   - 화면 바닥에서 좌우로만 이동 (Y 고정)
+//   - 자체 추진 속도는 MacrophageSystem 내부 상수로
+//   - drives 모두 0 (별도 시스템이 행동 제어)
+export const MACROPHAGE: DNA = {
+  shape: {
+    base: 40,
+    w1: { A: 0.15, n: 3, omega: 0.6 },
+    w2: { A: 0.10, n: 5, omega: 0.9 },
+    w3: { A: 0.06, n: 7, omega: 1.2 },
+  },
+  color: { h: 120, s: 30, l: 50 },
+  behavior: { target: 0, speed: 40, contact: 0, turnRate: 0 },
+  drives: {
+    avoidPredator:   { weight: 0, triggerRadius: 0 },
+    seekNutrient:    { weight: 0 },
+    seekPrey:        { weight: 0 },
+    spaceAlly:       { weight: 0, comfortRadius: 0 },
+    seekAlly:        { weight: 0 },
+    followCommander: { weight: 0 },
+  },
+  combat: { maxHp: 200, attack: 0 },
+  command: {
+    visionRange: 0,
+    commandRange: 0,
+    visionGrowth: 0,
+    commandGrowth: 0,
+    baseTeamSize: 0,
+    teamSizeStep: 0,
+    levelUpAbsorbCount: 0,
+  },
+  meta: { recovery: 0, divide: 0 },
 };

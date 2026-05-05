@@ -75,6 +75,8 @@ export class ShockwaveSystem {
   applyToCells(cells: readonly WhiteCell[], t: number, dt: number): void {
     if (this.waves.length === 0) return;
     for (const cell of cells) {
+      // 게임: 시체는 충격파 영향 X. 중력만 작용.
+      if (cell.isDead()) continue;
       let dvx = 0;
       let dvy = 0;
       let impulseMag = 0;
