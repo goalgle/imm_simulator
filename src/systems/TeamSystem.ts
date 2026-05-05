@@ -32,25 +32,29 @@ export class TeamSystem {
   private teams: Team[] = [];
   // 게임: 빠른 lookup. bacteria → team 매핑.
   private memberToTeam = new Map<Bacteria, Team>();
+  // 게임: 커맨더 사망 시각 기록. 일정 시간 후 일반 세균 1마리 진화 트리거용 (BloodScene 처리).
+  private commanderDeathTimes: number[] = [];
 
   // 게임: 매 프레임 호출.
   //   bacteria   : 모든 세균 (커맨더 + 일반). 죽은 것 포함 가능 — 내부에서 isDead 체크.
   //   whiteCells : 모든 백혈구 (살아있는 것만 의미 있음 — 시체는 자동 제외).
-  update(bacteria: readonly Bacteria[], whiteCells: readonly WhiteCell[]): void {
-    this.removeDeadCommandersAndMembers();
+  //   t          : 현재 시각 (초). 커맨더 사망 시각 기록용.
+  update(bacteria: readonly Bacteria[], whiteCells: readonly WhiteCell[], t: number): void {
+    this.removeDeadCommandersAndMembers(t);
     this.ensureTeamsForCommanders(bacteria);
     this.dropMembersOutOfRange();
     this.recruitNewMembers(bacteria);
     this.decideTeamModes(whiteCells);
   }
 
-  // 게임: 커맨더가 죽거나 멤버가 죽으면 정리.
-  private removeDeadCommandersAndMembers(): void {
-    // 죽은 커맨더 팀 해체 — 멤버 매핑도 같이 제거.
+  // 게임: 커맨더가 죽거나 멤버가 죽으면 정리. 커맨더 사망 시각 기록.
+  private removeDeadCommandersAndMembers(t: number): void {
+    // 죽은 커맨더 팀 해체 — 멤버 매핑도 같이 제거. 사망 시각 기록.
     const aliveTeams: Team[] = [];
     for (const team of this.teams) {
       if (team.commander.isDead()) {
         for (const m of team.members) this.memberToTeam.delete(m);
+        this.commanderDeathTimes.push(t);
         continue;
       }
       // 죽은 멤버는 팀에서 제거.
@@ -203,5 +207,19 @@ export class TeamSystem {
   // 게임: 커맨더 자신이 속한 팀 (자기 팀).
   getTeamOfCommander(commander: Bacteria): Team | null {
     return this.teams.find((t) => t.commander === commander) ?? null;
+  }
+
+  // 게임: durationSec 이상 경과한 커맨더 사망 record 를 반환하고 내부에서 제거.
+  //        BloodScene 이 매 프레임 호출 → 일반 세균 1마리 진화 트리거.
+  //        반환된 만큼 진화 처리해야 함 (호출자 책임).
+  consumeExpiredDeathRecords(t: number, durationSec: number): number[] {
+    const expired: number[] = [];
+    const remain: number[] = [];
+    for (const dt of this.commanderDeathTimes) {
+      if (t - dt >= durationSec) expired.push(dt);
+      else remain.push(dt);
+    }
+    this.commanderDeathTimes = remain;
+    return expired;
   }
 }

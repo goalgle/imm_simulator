@@ -4,7 +4,7 @@
 // M2.2: + drives(우선순위) + 관성 + 동족 분리력
 
 import Phaser from 'phaser';
-import { NEUTROPHIL, NEUTROPHIL_SUPER, BACTERIA_A, BACTERIA_COMMANDER, MACROPHAGE } from '../domain/dna';
+import { NEUTROPHIL, NEUTROPHIL_SUPER, NK_CELL, BACTERIA_A, BACTERIA_COMMANDER, MACROPHAGE } from '../domain/dna';
 import { WhiteCell } from '../entities/WhiteCell';
 import { Macrophage } from '../entities/Macrophage';
 import { GraphicsCellRenderer } from '../render/GraphicsCellRenderer';
@@ -54,6 +54,9 @@ function pct(v: number): string {
   return `${Math.round(v * 100)}%`;
 }
 
+// 게임: 커맨더 사망 후 일반 세균 1마리가 커맨더로 진화하기까지의 대기 시간 (초).
+const COMMANDER_EVOLUTION_DELAY = 10;
+
 // 게임: 분리력 파라미터. 같은 종족끼리 너무 붙는 것 방지.
 //   padding  : base 합 외에 추가로 비워둘 거리
 //   strength : 가속도 (px/s²). 강하면 빠르게 분리, 약하면 자연스럽게 떨어짐.
@@ -72,6 +75,8 @@ export class BloodScene extends Phaser.Scene {
   private teamSystem!: TeamSystem;
   private macrophageSystem!: MacrophageSystem;
   private hudText!: Phaser.GameObjects.Text;
+  private fpsText!: Phaser.GameObjects.Text;
+  private paused = false;
 
   constructor() {
     super('BloodScene');
@@ -142,7 +147,7 @@ export class BloodScene extends Phaser.Scene {
       this.shockwaveSystem.trySpawn(pointer.x, pointer.y, t);
     });
 
-    this.add.text(20, 20, 'M5.4: 대식세포 + 호중구 재생산 (슈퍼 포함)', {
+    this.add.text(20, 20, 'M6: 부하 테스트 (디버그 키 활성)', {
       color: '#aaa',
       fontFamily: 'ui-monospace, monospace',
       fontSize: '14px',
@@ -152,10 +157,59 @@ export class BloodScene extends Phaser.Scene {
       fontFamily: 'ui-monospace, monospace',
       fontSize: '14px',
     });
+    this.fpsText = this.add.text(20, 60, '', {
+      color: '#8cf',
+      fontFamily: 'ui-monospace, monospace',
+      fontSize: '14px',
+    });
+    this.add.text(20, 80, '[N]+호중구10  [B]+세균10  [P]일시정지  [R]리셋', {
+      color: '#888',
+      fontFamily: 'ui-monospace, monospace',
+      fontSize: '12px',
+    });
+
+    // Phaser: 디버그 키. scene.restart() 시 자동 정리되고 create 에서 재등록.
+    const kb = this.input.keyboard;
+    if (kb) {
+      kb.on('keydown-N', () => this.spawnNeutrophils(10));
+      kb.on('keydown-B', () => this.spawnBacteria(10));
+      kb.on('keydown-P', () => { this.paused = !this.paused; });
+      kb.on('keydown-R', () => this.scene.restart());
+    }
+  }
+
+  // 게임: 디버그용 호중구 스폰 — 무작위 위치, 100% hp.
+  private spawnNeutrophils(count: number): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    for (let i = 0; i < count; i++) {
+      const x = 100 + Math.random() * (W - 200);
+      const y = 100 + Math.random() * (H - 200);
+      const phase = Math.random() * Math.PI * 2;
+      this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, phase));
+    }
+  }
+
+  private spawnBacteria(count: number): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    for (let i = 0; i < count; i++) {
+      const x = 100 + Math.random() * (W - 200);
+      const y = 100 + Math.random() * (H - 200);
+      const phase = Math.random() * Math.PI * 2;
+      this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
+    }
   }
 
   // Phaser: 매 프레임 호출. delta 는 ms.
   override update(_time: number, delta: number): void {
+    // 게임: 일시정지 — update 자체를 skip 하면 t/dt 가 흐르지 않아 형태 떨림도 정지.
+    //       FPS 표시는 매 프레임 갱신해야 의미 있으므로 먼저 처리 후 return.
+    if (this.paused) {
+      this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  [PAUSED]`);
+      return;
+    }
+
     const t = this.time.now / 1000;
     const dt = delta / 1000;
     const bounds = { width: this.scale.width, height: this.scale.height };
@@ -170,7 +224,11 @@ export class BloodScene extends Phaser.Scene {
     this.nutrientSystem.update(t);
     // 게임: 팀 갱신 — 영입/탈퇴/해체 + 모드 결정 (방어/공격).
     //         behavior 호출 전이라 같은 프레임에 모드 전환 즉시 반영.
-    this.teamSystem.update(allBacteria, allCells);
+    //         t 인자는 커맨더 사망 시각 기록용 (진화 트리거).
+    this.teamSystem.update(allBacteria, allCells, t);
+
+    // 게임: 커맨더 사망 후 일정 시간 경과 시 일반 세균 1마리 진화.
+    this.evolveCommanders(t);
 
     // 게임: 2) 충돌 + 데미지 — 호중구↔세균 접촉 시 양쪽 hp 깎임 + combat 시각.
     //         호중구 사망 시 데미지 가한 세균 팀에 영양분 흡수 효과 보상.
@@ -197,6 +255,7 @@ export class BloodScene extends Phaser.Scene {
     // 게임: 5) 자체 추진 lerp.
     //         WhiteCell: 살아있는 세균만 prey 후보 (시체 추적 X).
     //         Bacteria: 살아있는 호중구만 predator 후보 (시체 회피 X).
+    // 게임: WhiteCellBehaviorSystem 은 Bacteria 객체 자체를 받아 isCommander 분기 (NK 용).
     this.whiteCellBehavior.update(dt, liveBacteria);
     this.bacteriaBehavior.update(t, dt, bounds, this.nutrientSystem, liveCells, this.teamSystem);
 
@@ -238,6 +297,27 @@ export class BloodScene extends Phaser.Scene {
     this.hudText.setText(
       `charges: ${charges}/${maxCharges}   live W/B: ${liveCells.length}/${liveBacteria.length}   hp avg: ${pct(wAvg)} / ${pct(bAvg)}   teams: ${teamInfo || '-'}   score: ${score}/100 (W:${wScore})`,
     );
+    this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}`);
+  }
+
+  // 게임: 커맨더 진화 — 사망 후 COMMANDER_EVOLUTION_DELAY 초 경과 시
+  //   살아있는 일반 세균 1마리를 무작위 선택해 커맨더로 변환.
+  //   변환 = 기존 세균 isAbsorbed=true 로 정리 + 같은 위치에 새 BACTERIA_COMMANDER 생성.
+  //   후보가 없으면 record 는 이미 소비됐으므로 다음 사망 시까지 진화 없음.
+  private evolveCommanders(t: number): void {
+    const expired = this.teamSystem.consumeExpiredDeathRecords(t, COMMANDER_EVOLUTION_DELAY);
+    if (expired.length === 0) return;
+    for (const _deathTime of expired) {
+      const candidates = this.bacteriaBehavior
+        .getAlive()
+        .filter((b) => !b.isCommander());
+      if (candidates.length === 0) continue;
+      const target = candidates[Math.floor(Math.random() * candidates.length)];
+      const x = target.x;
+      const y = target.y;
+      target.isAbsorbed = true; // cleanupAbsorbed 에서 다음 프레임에 정리
+      this.bacteriaBehavior.spawn(BACTERIA_COMMANDER, x, y, Math.random() * Math.PI * 2);
+    }
   }
 
   // 게임: 흡수된 시체 정리. 매 프레임 update 끝에 호출.
@@ -249,8 +329,9 @@ export class BloodScene extends Phaser.Scene {
   // 게임: 대식세포 점수 100 도달 시 호중구 생산.
   //   - 슈퍼 조건 만족(호중구 점수 ≥ 40): NEUTROPHIL_SUPER
   //   - 아니면: NEUTROPHIL
-  //   - 위치: 첫 번째 대식세포 X 좌표 위, Y 50~120 사이 (화면 위쪽)
-  //   - 한 프레임에 여러 번 발동 가능 (점수가 충분히 쌓였을 때 연속 생산)
+  //   - **위치: 대식세포 정확한 위치 + 위로 솟구치는 임펄스** — "분리되어 나오는" 효과.
+  //     마찰(1.5/sec)로 약 1초 후 멈춤.
+  //   - 한 프레임에 여러 번 발동 가능 (점수 충분 시 연속 생산)
   private tryProduceWhiteCell(): void {
     const macrophages = this.macrophageSystem.getAll();
     if (macrophages.length === 0) return;
@@ -258,11 +339,16 @@ export class BloodScene extends Phaser.Scene {
     let result = this.macrophageSystem.consumeScoreForProduction();
     while (result !== null) {
       const m = macrophages[0];
-      const x = m.x;
-      const y = 50 + Math.random() * 70;
+      const dna =
+        result.kind === 'nk' ? NK_CELL :
+        result.kind === 'super' ? NEUTROPHIL_SUPER :
+        NEUTROPHIL;
       const phase = Math.random() * Math.PI * 2;
-      const dna = result.isSuper ? NEUTROPHIL_SUPER : NEUTROPHIL;
-      this.whiteCellBehavior.add(new WhiteCell(dna, this.cellRenderer, x, y, phase));
+      const cell = new WhiteCell(dna, this.cellRenderer, m.x, m.y, phase);
+      // 게임: 대식세포에서 위로 분리되는 효과. 좌우 약간 무작위.
+      cell.vy = -180;
+      cell.vx = (Math.random() - 0.5) * 80;
+      this.whiteCellBehavior.add(cell);
       result = this.macrophageSystem.consumeScoreForProduction();
     }
   }

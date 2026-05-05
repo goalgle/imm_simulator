@@ -39,6 +39,10 @@ export type Drives = {
   seekNutrient: { weight: number };
   // 가장 가까운 먹이(다른 종족)로 향함. (백혈구가 세균을 추적할 때 사용)
   seekPrey: { weight: number };
+  // 가장 가까운 적 진영 커맨더로 향함. NK 가 우선 추적할 때 사용.
+  seekCommander: { weight: number };
+  // 가장 가까운 일반 세균(워커)에서 멀어지는 방향. NK 가 우회할 때 사용.
+  avoidWorker: { weight: number; triggerRadius: number };
   // 가장 가까운 동족이 너무 가까울 때 멀어짐. comfortRadius 안에 있을 때만 활성.
   spaceAlly: { weight: number; comfortRadius: number };
   // 가장 가까운 동족으로 향함 (군집형). 항상 활성.
@@ -73,6 +77,10 @@ export type DNA = {
     speed: number;
     contact: number;
     turnRate: number;
+    // 게임: HP 가 줄어도 속도가 일정 수준 이하로 떨어지지 않도록 하는 캡 (0~1).
+    //       0 = HP 비례 (호중구 등 일반), 1 = HP 무관 (NK 등 암살자).
+    //       effectiveRatio = max(hpRatio, minSpeedRatio).
+    minSpeedRatio: number;
   };
   drives: Drives;
   combat: {
@@ -101,11 +109,13 @@ export const NEUTROPHIL: DNA = {
     w3: { A: 0.10, n: 8, omega: 3.5 },
   },
   color: { h: 322, s: 53, l: 81 },
-  behavior: { target: 1.0, speed: 15, contact: 0.35, turnRate: 1.5 },
+  behavior: { target: 1.0, speed: 15, contact: 0.35, turnRate: 1.5, minSpeedRatio: 0 },
   drives: {
     avoidPredator:   { weight: 0, triggerRadius: 0 },
     seekNutrient:    { weight: 0 },
     seekPrey:        { weight: 1.0 },
+    seekCommander:   { weight: 0 },
+    avoidWorker:     { weight: 0, triggerRadius: 0 },
     spaceAlly:       { weight: 0, comfortRadius: 0 },
     seekAlly:        { weight: 0 },
     followCommander: { weight: 0 },
@@ -123,6 +133,46 @@ export const NEUTROPHIL: DNA = {
   meta: { recovery: 0.6, divide: 0.0 },
 };
 
+// 게임: NK 세포 (Natural Killer) 프리셋. M7 — 대식세포가 1/10 확률로 생산.
+//   특징:
+//     - 작은 체구 (base 22) — 일반 호중구(32)보다 작음
+//     - 강한 공격력 (attack 35), 빠름 (speed 30, turnRate 3.0)
+//     - HP 가 줄어도 속도 유지 (minSpeedRatio 1.0)
+//     - 커맨더 우선 추적 (seekCommander 1.5), 일반 세균은 회피하며 우회 (avoidWorker 0.4/80)
+//     - 커맨더 없으면 일반 세균 fallback (seekPrey 0.7)
+//   색상: 진한 청보라 — 슈퍼 호중구(분홍 보라) 와 명확히 구분.
+export const NK_CELL: DNA = {
+  shape: {
+    base: 22,
+    w1: { A: 0.35, n: 5, omega: 4.0 },
+    w2: { A: 0.25, n: 7, omega: 5.0 },
+    w3: { A: 0.15, n: 9, omega: 6.0 },
+  },
+  color: { h: 260, s: 55, l: 45 },
+  behavior: { target: 1.0, speed: 30, contact: 0.4, turnRate: 3.0, minSpeedRatio: 1.0 },
+  drives: {
+    avoidPredator:   { weight: 0, triggerRadius: 0 },
+    seekNutrient:    { weight: 0 },
+    seekPrey:        { weight: 0.7 },
+    seekCommander:   { weight: 1.5 },
+    avoidWorker:     { weight: 0.4, triggerRadius: 80 },
+    spaceAlly:       { weight: 0, comfortRadius: 0 },
+    seekAlly:        { weight: 0 },
+    followCommander: { weight: 0 },
+  },
+  combat: { maxHp: 80, attack: 35 },
+  command: {
+    visionRange: 0,
+    commandRange: 0,
+    visionGrowth: 0,
+    commandGrowth: 0,
+    baseTeamSize: 0,
+    teamSizeStep: 0,
+    levelUpAbsorbCount: 0,
+  },
+  meta: { recovery: 0.8, divide: 0 },
+};
+
 // 게임: 슈퍼 호중구 프리셋. M5.4c — 대식세포가 호중구 사체 점수 ≥ 40 모았을 때 생산.
 //   - 일반 호중구의 강화판: 더 크고 빠르고 강함
 //   - 색조 확연히 다름 (진한 보라) — 시각적 식별 우선
@@ -135,11 +185,13 @@ export const NEUTROPHIL_SUPER: DNA = {
     w3: { A: 0.10, n: 8, omega: 3.5 },
   },
   color: { h: 280, s: 65, l: 55 },
-  behavior: { target: 1.0, speed: 32, contact: 0.4, turnRate: 2.0 },
+  behavior: { target: 1.0, speed: 32, contact: 0.4, turnRate: 2.0, minSpeedRatio: 0 },
   drives: {
     avoidPredator:   { weight: 0, triggerRadius: 0 },
     seekNutrient:    { weight: 0 },
     seekPrey:        { weight: 1.0 },
+    seekCommander:   { weight: 0 },
+    avoidWorker:     { weight: 0, triggerRadius: 0 },
     spaceAlly:       { weight: 0, comfortRadius: 0 },
     seekAlly:        { weight: 0 },
     followCommander: { weight: 0 },
@@ -172,11 +224,13 @@ export const BACTERIA_A: DNA = {
     w3: { A: 0.10, n: 9, omega: 2.5 },
   },
   color: { h: 0, s: 0, l: 30 },
-  behavior: { target: 0, speed: 30, contact: 0, turnRate: 3.0 },
+  behavior: { target: 0, speed: 30, contact: 0, turnRate: 3.0, minSpeedRatio: 0 },
   drives: {
     avoidPredator:   { weight: 1.0, triggerRadius: 180 },
     seekNutrient:    { weight: 0.6 },
     seekPrey:        { weight: 0 },
+    seekCommander:   { weight: 0 },
+    avoidWorker:     { weight: 0, triggerRadius: 0 },
     spaceAlly:       { weight: 0.3, comfortRadius: 50 },
     seekAlly:        { weight: 0 },
     followCommander: { weight: 0.7 },  // M5.2: 팀에 속하면 지휘범위 밖에서 끌림
@@ -208,7 +262,7 @@ export const BACTERIA_COMMANDER: DNA = {
     w3: { A: 0.08, n: 9, omega: 2.0 },
   },
   color: { h: 330, s: 50, l: 25 },
-  behavior: { target: 0, speed: 25, contact: 0, turnRate: 2.5 },
+  behavior: { target: 0, speed: 25, contact: 0, turnRate: 2.5, minSpeedRatio: 0 },
   drives: {
     // 회피 시야는 일반 세균과 동일(180) — 가까이 와야 도망. 그 안에 들어오면 강하게 회피(1.5).
     // 공격 결정 시야는 별도 (command.visionRange = 540) — 멀리서 호중구 인지하여 팀 모드 결정.
@@ -216,6 +270,8 @@ export const BACTERIA_COMMANDER: DNA = {
     avoidPredator:   { weight: 1.5, triggerRadius: 180 },
     seekNutrient:    { weight: 0.7 },
     seekPrey:        { weight: 0 },
+    seekCommander:   { weight: 0 },
+    avoidWorker:     { weight: 0, triggerRadius: 0 },
     spaceAlly:       { weight: 0.2, comfortRadius: 60 },
     seekAlly:        { weight: 0 },
     followCommander: { weight: 0 },
@@ -248,11 +304,13 @@ export const MACROPHAGE: DNA = {
     w3: { A: 0.06, n: 7, omega: 1.2 },
   },
   color: { h: 120, s: 30, l: 50 },
-  behavior: { target: 0, speed: 40, contact: 0, turnRate: 0 },
+  behavior: { target: 0, speed: 40, contact: 0, turnRate: 0, minSpeedRatio: 0 },
   drives: {
     avoidPredator:   { weight: 0, triggerRadius: 0 },
     seekNutrient:    { weight: 0 },
     seekPrey:        { weight: 0 },
+    seekCommander:   { weight: 0 },
+    avoidWorker:     { weight: 0, triggerRadius: 0 },
     spaceAlly:       { weight: 0, comfortRadius: 0 },
     seekAlly:        { weight: 0 },
     followCommander: { weight: 0 },

@@ -105,15 +105,24 @@ export class MacrophageSystem {
     }
   }
 
-  // 게임: M5.4b 에서 사용 — 100점 도달 시 호중구 생산 후 카운터 리셋.
-  //        반환값: 생산할 호중구가 슈퍼인지 여부. 점수 부족이면 null.
-  consumeScoreForProduction(): { isSuper: boolean } | null {
+  // 게임: 100점 도달 시 호중구 생산. 반환값으로 어떤 종류인지 결정.
+  //   우선순위:
+  //     1. 1/10 확률 → NK 세포 (암살자)
+  //     2. 호중구 사체 점수 ≥ 40 → 슈퍼 호중구
+  //     3. 그 외 → 일반 호중구
+  //   매 호출 시 카운터 -100, 호중구 풀 0 리셋.
+  consumeScoreForProduction(): { kind: 'normal' | 'super' | 'nk' } | null {
     if (this.totalScore < 100) return null;
-    const isSuper = this.whiteCellScoreInPool >= 40;
+    let kind: 'normal' | 'super' | 'nk';
+    if (Math.random() < 0.1) {
+      kind = 'nk';
+    } else if (this.whiteCellScoreInPool >= 40) {
+      kind = 'super';
+    } else {
+      kind = 'normal';
+    }
     this.totalScore -= 100;
-    // 게임: 호중구 점수 풀도 리셋. 단, 100 안에 포함됐던 부분만 차감.
-    //        간단화 — 여기선 그냥 0 으로 리셋 (다음 100점 풀은 새로 시작).
     this.whiteCellScoreInPool = 0;
-    return { isSuper };
+    return { kind };
   }
 }

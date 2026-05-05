@@ -27,6 +27,8 @@ const AGGRESSIVE_DRIVES: Drives = {
   avoidPredator:   { weight: 0.2, triggerRadius: 180 },
   seekNutrient:    { weight: 0 },
   seekPrey:        { weight: 1.5 },
+  seekCommander:   { weight: 0 },
+  avoidWorker:     { weight: 0, triggerRadius: 0 },
   spaceAlly:       { weight: 0.3, comfortRadius: 50 },
   seekAlly:        { weight: 0 },
   followCommander: { weight: 0 },
@@ -127,6 +129,8 @@ export class BacteriaBehaviorSystem {
         allies: aliveAllies,
         nearestNutrient: nutrient,
         nearestPrey: target,
+        nearestCommander: null,
+        nearestWorker: null,
         commander: commanderInfo,
       };
 

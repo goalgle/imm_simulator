@@ -147,6 +147,8 @@ describe('computeDesiredDirection — 세균(BACTERIA_A)', () => {
     allies: [self],
     nearestNutrient: null,
     nearestPrey: null,
+    nearestCommander: null,
+    nearestWorker: null,
     commander: null,
     ...over,
   });
@@ -207,6 +209,8 @@ describe('computeDesiredDirection — 호중구(NEUTROPHIL)', () => {
         allies: [self],
         nearestNutrient: null,
         nearestPrey: { x: 200, y: 100 },
+        nearestCommander: null,
+        nearestWorker: null,
         commander: null,
       },
     );
@@ -223,6 +227,8 @@ describe('computeDesiredDirection — 호중구(NEUTROPHIL)', () => {
         allies: [self],
         nearestNutrient: null,
         nearestPrey: null,
+        nearestCommander: null,
+        nearestWorker: null,
         commander: null,
       },
     );

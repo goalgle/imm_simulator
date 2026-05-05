@@ -33,6 +33,10 @@ export type Senses = {
   allies: readonly Positioned[];       // 동족 (자기 자신 포함 가능)
   nearestNutrient: Positioned | null;  // 영양분 (세균이 사용)
   nearestPrey: Positioned | null;      // 먹이 (백혈구가 사용 — 세균)
+  // 게임: 가장 가까운 살아있는 커맨더 종 — NK 의 seekCommander 평가용.
+  nearestCommander: Positioned | null;
+  // 게임: 가장 가까운 살아있는 일반 세균 — NK 의 avoidWorker 평가용.
+  nearestWorker: Positioned | null;
   // 게임: 자기가 속한 팀의 지휘관. 무소속이면 null.
   //        controlRadius 는 지휘관의 currentCommandRange — 영양분 흡수로 늘어나는 동적 값.
   //        followCommander drive 가 이 거리 이내일 때 활성도 0 (자유 행동), 밖이면 끌어당김.
@@ -112,6 +116,42 @@ export function evalSeekPrey(
   return { dirX: dx / dist, dirY: dy / dist, activation: 1 };
 }
 
+// 게임: seekCommander — 가장 가까운 적 진영 커맨더 방향. NK 가 우선 추적할 때 사용.
+//        seekPrey 와 같은 로직이지만 대상이 커맨더만.
+export function evalSeekCommander(
+  selfX: number,
+  selfY: number,
+  commander: Positioned | null,
+): DriveEval {
+  if (commander === null) return ZERO;
+  const dx = commander.x - selfX;
+  const dy = commander.y - selfY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 0.001) return { dirX: 0, dirY: 0, activation: 1 };
+  return { dirX: dx / dist, dirY: dy / dist, activation: 1 };
+}
+
+// 게임: avoidWorker — 가장 가까운 일반 세균에서 멀어지는 방향. NK 가 우회할 때 사용.
+//        avoidPredator 와 같은 패턴이지만 대상이 일반 세균.
+export function evalAvoidWorker(
+  selfX: number,
+  selfY: number,
+  worker: Positioned | null,
+  triggerRadius: number,
+): DriveEval {
+  if (worker === null) return ZERO;
+  const dx = worker.x - selfX;
+  const dy = worker.y - selfY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > triggerRadius) return ZERO;
+  if (dist < 0.001) return { dirX: 0, dirY: 0, activation: 1 };
+  return {
+    dirX: -dx / dist,
+    dirY: -dy / dist,
+    activation: 1 - dist / triggerRadius,
+  };
+}
+
 // 게임: spaceAlly — 가장 가까운 동족이 comfortRadius 안에 있으면 멀어지는 방향.
 //        가까울수록 활성도 ↑.
 export function evalSpaceAlly(
@@ -180,6 +220,8 @@ export function computeDesiredDirection(
   const ap = evalAvoidPredator(self.x, self.y, senses.predators, drives.avoidPredator.triggerRadius);
   const sn = evalSeekNutrient(self.x, self.y, senses.nearestNutrient);
   const sprey = evalSeekPrey(self.x, self.y, senses.nearestPrey);
+  const scmd = evalSeekCommander(self.x, self.y, senses.nearestCommander);
+  const aw = evalAvoidWorker(self.x, self.y, senses.nearestWorker, drives.avoidWorker.triggerRadius);
   const sp = evalSpaceAlly(self.x, self.y, senses.allies, self, drives.spaceAlly.comfortRadius);
   const sa = evalSeekAlly(self.x, self.y, senses.allies, self);
   const fc = evalFollowCommander(self.x, self.y, senses.commander);
@@ -192,6 +234,10 @@ export function computeDesiredDirection(
   dy += sn.dirY * sn.activation * drives.seekNutrient.weight;
   dx += sprey.dirX * sprey.activation * drives.seekPrey.weight;
   dy += sprey.dirY * sprey.activation * drives.seekPrey.weight;
+  dx += scmd.dirX * scmd.activation * drives.seekCommander.weight;
+  dy += scmd.dirY * scmd.activation * drives.seekCommander.weight;
+  dx += aw.dirX * aw.activation * drives.avoidWorker.weight;
+  dy += aw.dirY * aw.activation * drives.avoidWorker.weight;
   dx += sp.dirX * sp.activation * drives.spaceAlly.weight;
   dy += sp.dirY * sp.activation * drives.spaceAlly.weight;
   dx += sa.dirX * sa.activation * drives.seekAlly.weight;
