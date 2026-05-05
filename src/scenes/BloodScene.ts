@@ -77,6 +77,10 @@ export class BloodScene extends Phaser.Scene {
   private hudText!: Phaser.GameObjects.Text;
   private fpsText!: Phaser.GameObjects.Text;
   private paused = false;
+  // 게임: 가상 시간 + 빨리감기. Phaser 의 this.time.now 대신 사용.
+  //        speedMultiplier 1=정상, 2=2배, 4=4배. update 에서 dt 에 곱.
+  private gameTime = 0;
+  private speedMultiplier = 1;
 
   constructor() {
     super('BloodScene');
@@ -84,7 +88,10 @@ export class BloodScene extends Phaser.Scene {
 
   // Phaser: 씬 시작 시 1회 호출.
   create(): void {
-    const t0 = this.time.now / 1000;
+    // 게임: 리셋 시 가상 시간 초기화 (scene.restart() 가 같은 인스턴스 재사용).
+    this.gameTime = 0;
+    this.speedMultiplier = 1;
+    this.paused = false;
     const W = this.scale.width;
     const H = this.scale.height;
 
@@ -94,7 +101,7 @@ export class BloodScene extends Phaser.Scene {
 
     this.shockwaveSystem = new ShockwaveSystem({
       ...SHOCKWAVE_CONFIG,
-      initialTime: t0,
+      initialTime: 0,  // 가상 시간 시작점
     });
     this.nutrientSystem = new NutrientSystem(
       NUTRIENT_COUNT,
@@ -102,7 +109,7 @@ export class BloodScene extends Phaser.Scene {
       NUTRIENT_RESPAWN_DELAY,
     );
     this.bacteriaBehavior = new BacteriaBehaviorSystem(this.cellRenderer);
-    this.whiteCellBehavior = new WhiteCellBehaviorSystem();
+    this.whiteCellBehavior = new WhiteCellBehaviorSystem(this.cellRenderer);
     this.contactSystem = new ContactSystem();
     this.teamSystem = new TeamSystem();
     this.macrophageSystem = new MacrophageSystem();
@@ -142,9 +149,10 @@ export class BloodScene extends Phaser.Scene {
     }
 
     // Phaser: pointerdown = 마우스 클릭 + 터치 탭 둘 다 받음.
+    // 게임: trySpawn 의 t 는 가상 시간 (this.gameTime). ShockwaveSystem.update 도 같은 시간 기준이어야
+    //        startTime 비교가 일관되게 작동.
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      const t = this.time.now / 1000;
-      this.shockwaveSystem.trySpawn(pointer.x, pointer.y, t);
+      this.shockwaveSystem.trySpawn(pointer.x, pointer.y, this.gameTime);
     });
 
     this.add.text(20, 20, 'M6: 부하 테스트 (디버그 키 활성)', {
@@ -162,7 +170,7 @@ export class BloodScene extends Phaser.Scene {
       fontFamily: 'ui-monospace, monospace',
       fontSize: '14px',
     });
-    this.add.text(20, 80, '[N]+호중구10  [B]+세균10  [P]일시정지  [R]리셋', {
+    this.add.text(20, 80, '[N]+호중구10  [B]+세균10  [P]일시정지  [R]리셋  [1/2/3] 1x/2x/4x', {
       color: '#888',
       fontFamily: 'ui-monospace, monospace',
       fontSize: '12px',
@@ -175,6 +183,9 @@ export class BloodScene extends Phaser.Scene {
       kb.on('keydown-B', () => this.spawnBacteria(10));
       kb.on('keydown-P', () => { this.paused = !this.paused; });
       kb.on('keydown-R', () => this.scene.restart());
+      kb.on('keydown-ONE',   () => { this.speedMultiplier = 1; });
+      kb.on('keydown-TWO',   () => { this.speedMultiplier = 2; });
+      kb.on('keydown-THREE', () => { this.speedMultiplier = 4; });
     }
   }
 
@@ -203,15 +214,18 @@ export class BloodScene extends Phaser.Scene {
 
   // Phaser: 매 프레임 호출. delta 는 ms.
   override update(_time: number, delta: number): void {
-    // 게임: 일시정지 — update 자체를 skip 하면 t/dt 가 흐르지 않아 형태 떨림도 정지.
-    //       FPS 표시는 매 프레임 갱신해야 의미 있으므로 먼저 처리 후 return.
+    // 게임: 일시정지 — update 자체를 skip. gameTime 정지 → 모든 시각/물리 멈춤.
     if (this.paused) {
-      this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  [PAUSED]`);
+      this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  speed: ${this.speedMultiplier}x  [PAUSED]`);
       return;
     }
 
-    const t = this.time.now / 1000;
-    const dt = delta / 1000;
+    // 게임: 가상 시간 — Phaser this.time.now 무시. dt 에 speedMultiplier 곱하여 빨리감기.
+    //        모든 시스템이 t/dt 를 인자로 받으므로 자동 가속.
+    const dtReal = delta / 1000;
+    const dt = dtReal * this.speedMultiplier;
+    this.gameTime += dt;
+    const t = this.gameTime;
     const bounds = { width: this.scale.width, height: this.scale.height };
 
     const allCells = this.whiteCellBehavior.getAll();
@@ -297,7 +311,7 @@ export class BloodScene extends Phaser.Scene {
     this.hudText.setText(
       `charges: ${charges}/${maxCharges}   live W/B: ${liveCells.length}/${liveBacteria.length}   hp avg: ${pct(wAvg)} / ${pct(bAvg)}   teams: ${teamInfo || '-'}   score: ${score}/100 (W:${wScore})`,
     );
-    this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}`);
+    this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  speed: ${this.speedMultiplier}x`);
   }
 
   // 게임: 커맨더 진화 — 사망 후 COMMANDER_EVOLUTION_DELAY 초 경과 시

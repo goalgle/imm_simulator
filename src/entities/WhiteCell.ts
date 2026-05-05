@@ -15,8 +15,13 @@ const WALL_BOUNCE = 0.5;
 // 게임: 충격파 시각 활성도(shockResponse) 회복 속도 (1/sec). 약 1초에 95% 회복.
 const SHOCK_RECOVERY = 3.0;
 
+// 게임: 약화 임계 — HP 비율 이 미만이면 동료 흡수 대상 / 자기는 동료에게 의지.
+export const WEAK_HP_THRESHOLD = 0.25;
+
 export class WhiteCell extends LivingCell {
   private shockResponse = 0;
+  // 게임: 동료 흡수 누적 카운터. 2 도달 시 슈퍼 호중구로 변환 (NEUTROPHIL 만 적용).
+  mergeCounter = 0;
 
   constructor(
     dna: DNA,
@@ -32,6 +37,11 @@ export class WhiteCell extends LivingCell {
   applyShockImpulse(amount: number): void {
     if (this.isDead()) return;
     this.shockResponse = Math.min(1, this.shockResponse + amount);
+  }
+
+  // 게임: HP 가 임계 미만이면 약화 — 동료에게 흡수 대상.
+  isWeak(): boolean {
+    return !this.isDead() && this.hpRatio() < WEAK_HP_THRESHOLD;
   }
 
   protected override updateAlive(t: number, dt: number, bounds: Bounds): void {
