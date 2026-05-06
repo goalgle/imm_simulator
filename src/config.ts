@@ -18,8 +18,7 @@ export const gameConfig: Phaser.Types.Core.GameConfig = {
   backgroundColor: '#0a0a0a',
 
   // Phaser: 게임에 등록할 Scene 목록. 배열의 첫 번째가 자동으로 시작됨.
-  // 게임:   MVP 는 장면 1(혈관 속) 만 → BloodScene 하나만 등록.
-  //         장면 2(세포 속) 추가 시 여기에 함께 나열.
+  // 게임:   장면 2(세포 속)는 BloodScene 안에 phase='inside' 로 통합 (보조 카메라 + Layer).
   scene: [BloodScene],
 
   // Phaser: Scale Manager 설정. 창 크기 변화 / 캔버스 정렬 방식.
