@@ -88,10 +88,26 @@ export type DNA = {
     attack: number;
   };
   command: Command;
+  // 게임: M7 — 발사체(항체 등) 형질. 발사 안 하는 종은 모두 0.
+  armament: Armament;
   meta: {
     recovery: number;
     divide: number;
   };
+};
+
+// 게임: 무장 형질. B세포가 항체를 발사할 때 사용. 다른 종은 모두 0.
+//   fireRange         : 표적 인식 거리 (시야)
+//   fireCooldown      : 발사 주기 (초)
+//   projectileSpeed   : 발사체 속도 (px/s)
+//   projectileDamage  : 발사체 데미지 (세균이 흡수 시 hp 감소량)
+//   projectileRange   : 발사체 사거리 (px). 이 거리 지나면 정지 (지뢰 모드)
+export type Armament = {
+  fireRange: number;
+  fireCooldown: number;
+  projectileSpeed: number;
+  projectileDamage: number;
+  projectileRange: number;
 };
 
 // 게임: 호중구(Neutrophil) 프리셋.
@@ -130,6 +146,7 @@ export const NEUTROPHIL: DNA = {
     teamSizeStep: 0,
     levelUpAbsorbCount: 0,
   },
+  armament: { fireRange: 0, fireCooldown: 0, projectileSpeed: 0, projectileDamage: 0, projectileRange: 0 },
   meta: { recovery: 0.6, divide: 0.0 },
 };
 
@@ -170,7 +187,96 @@ export const NK_CELL: DNA = {
     teamSizeStep: 0,
     levelUpAbsorbCount: 0,
   },
+  armament: { fireRange: 0, fireCooldown: 0, projectileSpeed: 0, projectileDamage: 0, projectileRange: 0 },
   meta: { recovery: 0.8, divide: 0 },
+};
+
+// 게임: B 세포 (B-cell) 프리셋. M7 — 미사일 기지형 백혈구.
+//   특징:
+//     - 작은 체구 (base 20), 매우 낮은 HP (50), 거의 정지 (speed 5)
+//     - 직접 공격 X — armament 로 항체 발사
+//     - 항체는 영양분처럼 보여 세균이 흡수 → HP 감소 (지뢰형 발사체)
+//     - 항체는 사거리 만료 시 정지 후 그 자리에 남음
+//   색상: 연보라 (아이디어 기획서 §B세포).
+export const BCELL: DNA = {
+  shape: {
+    base: 20,
+    w1: { A: 0.20, n: 2, omega: 1.0 },
+    w2: { A: 0.15, n: 3, omega: 1.5 },
+    w3: { A: 0.10, n: 4, omega: 2.0 },
+  },
+  color: { h: 232, s: 50, l: 70 },
+  behavior: { target: 1.0, speed: 5, contact: 0.2, turnRate: 1.0, minSpeedRatio: 0 },
+  drives: {
+    avoidPredator:   { weight: 0, triggerRadius: 0 },
+    seekNutrient:    { weight: 0 },
+    seekPrey:        { weight: 0 },
+    seekCommander:   { weight: 0 },
+    avoidWorker:     { weight: 0, triggerRadius: 0 },
+    spaceAlly:       { weight: 0, comfortRadius: 0 },
+    seekAlly:        { weight: 0 },
+    followCommander: { weight: 0 },
+  },
+  combat: { maxHp: 50, attack: 0 },
+  command: {
+    visionRange: 0,
+    commandRange: 0,
+    visionGrowth: 0,
+    commandGrowth: 0,
+    baseTeamSize: 0,
+    teamSizeStep: 0,
+    levelUpAbsorbCount: 0,
+  },
+  armament: {
+    fireRange: 250,
+    fireCooldown: 3.0,
+    projectileSpeed: 40,
+    projectileDamage: 15,
+    projectileRange: 250,
+  },
+  meta: { recovery: 0.4, divide: 0 },
+};
+
+// 게임: T 세포 (T-cell, 대장세포) 프리셋. M7 — 백혈구 진영의 지휘관.
+//   특징:
+//     - 직접 공격 X (attack 0)
+//     - 호중구들 근처에 머무름 (seekAlly 1.0)
+//     - 시야 넓음 (command.visionRange 450) — 미래 명령 메커니즘용 보존
+//     - 지휘범위(command.commandRange 200) 안에서 호중구가 세균 죽이면 그 호중구 레벨업
+//     - 호중구 5레벨 도달 시 NK/BCELL/SUPER 중 무작위 진화 (T세포 자체는 진화 X)
+//     - baseTeamSize=0 (세균 커맨더와 다름 — isCommander 헬퍼는 false)
+//   색상: 진한 청록 (아이디어 기획서 §T세포).
+export const TCELL: DNA = {
+  shape: {
+    base: 24,
+    w1: { A: 0.25, n: 3, omega: 3.5 },
+    w2: { A: 0.15, n: 5, omega: 4.0 },
+    w3: { A: 0.10, n: 7, omega: 4.5 },
+  },
+  color: { h: 186, s: 50, l: 40 },
+  behavior: { target: 0, speed: 25, contact: 0.3, turnRate: 3.0, minSpeedRatio: 0 },
+  drives: {
+    avoidPredator:   { weight: 0, triggerRadius: 0 },
+    seekNutrient:    { weight: 0 },
+    seekPrey:        { weight: 0 },
+    seekCommander:   { weight: 0 },
+    avoidWorker:     { weight: 0, triggerRadius: 0 },
+    spaceAlly:       { weight: 0.2, comfortRadius: 50 },
+    seekAlly:        { weight: 1.0 },
+    followCommander: { weight: 0 },
+  },
+  combat: { maxHp: 100, attack: 0 },
+  command: {
+    visionRange: 450,
+    commandRange: 200,
+    visionGrowth: 0,
+    commandGrowth: 0,
+    baseTeamSize: 0,
+    teamSizeStep: 0,
+    levelUpAbsorbCount: 0,
+  },
+  armament: { fireRange: 0, fireCooldown: 0, projectileSpeed: 0, projectileDamage: 0, projectileRange: 0 },
+  meta: { recovery: 0.6, divide: 0 },
 };
 
 // 게임: 슈퍼 호중구 프리셋. M5.4c — 대식세포가 호중구 사체 점수 ≥ 40 모았을 때 생산.
@@ -206,6 +312,7 @@ export const NEUTROPHIL_SUPER: DNA = {
     teamSizeStep: 0,
     levelUpAbsorbCount: 0,
   },
+  armament: { fireRange: 0, fireCooldown: 0, projectileSpeed: 0, projectileDamage: 0, projectileRange: 0 },
   meta: { recovery: 0.7, divide: 0.0 },
 };
 
@@ -245,6 +352,7 @@ export const BACTERIA_A: DNA = {
     teamSizeStep: 0,
     levelUpAbsorbCount: 0,
   },
+  armament: { fireRange: 0, fireCooldown: 0, projectileSpeed: 0, projectileDamage: 0, projectileRange: 0 },
   meta: { recovery: 0.3, divide: 0 },
 };
 
@@ -286,6 +394,7 @@ export const BACTERIA_COMMANDER: DNA = {
     teamSizeStep: 3,
     levelUpAbsorbCount: 5,
   },
+  armament: { fireRange: 0, fireCooldown: 0, projectileSpeed: 0, projectileDamage: 0, projectileRange: 0 },
   meta: { recovery: 0.4, divide: 0 },
 };
 
@@ -297,11 +406,13 @@ export const BACTERIA_COMMANDER: DNA = {
 //   - 자체 추진 속도는 MacrophageSystem 내부 상수로
 //   - drives 모두 0 (별도 시스템이 행동 제어)
 export const MACROPHAGE: DNA = {
+  // 게임: 작고 납작 — base 25 + Macrophage.update 가 setScale(1.0, 0.55) 로 Y 압축.
+  //        외곽이 더 불규칙 (A 큼 + n 다양) → 둥근 공보다 "기어다니는" 모호한 형태.
   shape: {
-    base: 40,
-    w1: { A: 0.15, n: 3, omega: 0.6 },
-    w2: { A: 0.10, n: 5, omega: 0.9 },
-    w3: { A: 0.06, n: 7, omega: 1.2 },
+    base: 25,
+    w1: { A: 0.25, n: 3, omega: 0.5 },
+    w2: { A: 0.18, n: 5, omega: 0.8 },
+    w3: { A: 0.10, n: 8, omega: 1.0 },
   },
   color: { h: 120, s: 30, l: 50 },
   behavior: { target: 0, speed: 40, contact: 0, turnRate: 0, minSpeedRatio: 0 },
@@ -325,5 +436,6 @@ export const MACROPHAGE: DNA = {
     teamSizeStep: 0,
     levelUpAbsorbCount: 0,
   },
+  armament: { fireRange: 0, fireCooldown: 0, projectileSpeed: 0, projectileDamage: 0, projectileRange: 0 },
   meta: { recovery: 0, divide: 0 },
 };

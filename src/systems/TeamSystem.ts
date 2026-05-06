@@ -8,6 +8,8 @@
 
 import type { Bacteria } from '../entities/Bacteria';
 import type { WhiteCell } from '../entities/WhiteCell';
+import type { DNA } from '../domain/dna';
+import { BCELL, TCELL } from '../domain/dna';
 
 // 게임: 멤버가 지휘범위 × 이 비율 이상 벗어나면 자동 탈퇴.
 //        영입 거리(commandRange) 보다 살짝 넓게 두어 경계에서 깜빡이는 영입/탈퇴 방지.
@@ -16,6 +18,16 @@ const LEAVE_FACTOR = 1.5;
 // 게임: 공격 모드 진입 우세계수. 팀 총 HP > 호중구 HP × 이 값 이면 공격.
 //        1.5 = 50% 우세 마진. 박빙/약간 우세는 방어, 명확히 우세할 때만 공격.
 const ATTACK_HP_THRESHOLD = 1.5;
+
+// 게임: 공격 표적 우선순위. 작은 숫자 = 우선.
+//   1순위 BCELL — 정지/약체라 잡기 쉬움 + 항체 위협 차단
+//   2순위 TCELL — 호중구 진화 매개라 차단 시 호중구 보강 끊김
+//   3순위 그 외 (NEUTROPHIL/SUPER/NK) — 직접 전투 대상
+function priorityOf(dna: DNA): number {
+  if (dna === BCELL) return 1;
+  if (dna === TCELL) return 2;
+  return 3;
+}
 
 export type TeamMode = 'defensive' | 'aggressive';
 
@@ -156,8 +168,11 @@ export class TeamSystem {
       const visionR = cmd.currentVisionRange;
       const visionR2 = visionR * visionR;
 
-      // 게임: 시야 내 가장 가까운 살아있는 호중구.
+      // 게임: 시야 내 살아있는 백혈구 중 우선순위 가장 높은 것 선택.
+      //   - priorityOf 가 작을수록 우선 (1=BCELL, 2=TCELL, 3=기타)
+      //   - 같은 우선순위 내에서는 가장 가까운 것
       let nearest: WhiteCell | null = null;
+      let bestPriority = Infinity;
       let bestDist2 = Infinity;
       for (const w of whiteCells) {
         if (w.isDead()) continue;
@@ -165,7 +180,9 @@ export class TeamSystem {
         const dy = w.y - cy;
         const d2 = dx * dx + dy * dy;
         if (d2 > visionR2) continue;
-        if (d2 < bestDist2) {
+        const p = priorityOf(w.dna);
+        if (p < bestPriority || (p === bestPriority && d2 < bestDist2)) {
+          bestPriority = p;
           bestDist2 = d2;
           nearest = w;
         }

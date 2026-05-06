@@ -52,8 +52,12 @@ class GraphicsHandle implements CellRenderHandle {
     this.phase = phase;
   }
 
-  setScale(scale: number): void {
-    this.gfx.setScale(scale);
+  setScale(scaleX: number, scaleY?: number): void {
+    this.gfx.setScale(scaleX, scaleY ?? scaleX);
+  }
+
+  setAlpha(alpha: number): void {
+    this.gfx.setAlpha(alpha);
   }
 
   setVisualState(state: VisualState): void {

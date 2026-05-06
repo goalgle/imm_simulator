@@ -19,8 +19,9 @@ import { WhiteCell as WhiteCellCtor } from '../entities/WhiteCell';
 import type { Bacteria } from '../entities/Bacteria';
 import type { Senses, Positioned } from '../domain/drives';
 import { applyDriveLerp } from './behaviorHelpers';
-import { NEUTROPHIL, NEUTROPHIL_SUPER } from '../domain/dna';
+import { NEUTROPHIL, NEUTROPHIL_SUPER, BCELL } from '../domain/dna';
 import type { CellRenderer } from '../render/CellRenderer';
+import type { AntibodySystem } from './AntibodySystem';
 
 // 게임: 흡수 발동 거리 = baseRadius 합 + 이 padding.
 //        분리력보다 살짝 짧게 두어 흡수가 우선되도록.
@@ -32,7 +33,10 @@ const FUSION_THRESHOLD = 2;
 export class WhiteCellBehaviorSystem {
   private cells: WhiteCell[] = [];
 
-  constructor(private readonly renderer: CellRenderer) {}
+  constructor(
+    private readonly renderer: CellRenderer,
+    private readonly antibodySystem: AntibodySystem,
+  ) {}
 
   add(cell: WhiteCell): void {
     this.cells.push(cell);
@@ -108,6 +112,60 @@ export class WhiteCellBehaviorSystem {
 
     // 게임: 호중구 흡수 처리. update 끝에 한 번 — 갱신된 위치 기준.
     this.processFusion();
+
+    // 게임: B세포 항체 발사. cooldown 갱신 + 발사 가능 시 표적 결정 후 spawn.
+    this.processBCellFiring(dt, bacteria);
+  }
+
+  // 게임: B세포 발사 처리. 시야 안 가장 가까운 세균 / 없으면 무작위 방향.
+  //   armament.fireRange 안의 살아있는 세균 후보 1마리 선정 → 그 방향.
+  //   armament.projectileSpeed/Damage/Range 가 항체 속성으로 전달됨.
+  private processBCellFiring(dt: number, bacteria: readonly Bacteria[]): void {
+    for (const cell of this.cells) {
+      if (cell.isDead()) continue;
+      if (cell.dna !== BCELL) continue;
+
+      cell.fireCooldownRemaining -= dt;
+      if (cell.fireCooldownRemaining > 0) continue;
+
+      const range = cell.dna.armament.fireRange;
+      const range2 = range * range;
+      let target: Bacteria | null = null;
+      let bestDist2 = Infinity;
+      for (const b of bacteria) {
+        if (b.isDead()) continue;
+        const dx = b.x - cell.x;
+        const dy = b.y - cell.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > range2) continue;
+        if (d2 < bestDist2) { bestDist2 = d2; target = b; }
+      }
+
+      let dirX: number;
+      let dirY: number;
+      if (target !== null) {
+        const dx = target.x - cell.x;
+        const dy = target.y - cell.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < 0.001) {
+          // 게임: 거의 같은 위치 — 무작위 방향으로 fallback.
+          const angle = Math.random() * Math.PI * 2;
+          dirX = Math.cos(angle);
+          dirY = Math.sin(angle);
+        } else {
+          dirX = dx / d;
+          dirY = dy / d;
+        }
+      } else {
+        // 게임: 시야 안 표적 없음 — 무작위 방향.
+        const angle = Math.random() * Math.PI * 2;
+        dirX = Math.cos(angle);
+        dirY = Math.sin(angle);
+      }
+
+      this.antibodySystem.spawn(cell.x, cell.y, dirX, dirY, cell.dna.armament);
+      cell.fireCooldownRemaining = cell.dna.armament.fireCooldown;
+    }
   }
 
   // 게임: NEUTROPHIL 의 동료 흡수 추적 대상 결정.

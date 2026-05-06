@@ -9,6 +9,7 @@
 import type { Bacteria } from '../entities/Bacteria';
 import type { NutrientSystem } from './NutrientSystem';
 import type { TeamSystem } from './TeamSystem';
+import type { AntibodySystem } from './AntibodySystem';
 import { Bacteria as BacteriaCtor } from '../entities/Bacteria';
 import type { CellRenderer } from '../render/CellRenderer';
 import type { DNA, Drives } from '../domain/dna';
@@ -69,8 +70,9 @@ export class BacteriaBehaviorSystem {
   }
 
   // 게임: 매 프레임 호출.
-  //   predators : 살아있는 백혈구 위치 (시체는 BloodScene 에서 필터링)
-  //   teams     : 팀 정보 (멤버는 자기 팀 지휘관 위치를 senses 에 받음)
+  //   predators  : 살아있는 백혈구 위치 (시체는 BloodScene 에서 필터링)
+  //   teams      : 팀 정보 (멤버는 자기 팀 지휘관 위치를 senses 에 받음)
+  //   antibodies : B세포 항체. 영양분처럼 추적되지만 흡수 시 HP 감소.
   update(
     t: number,
     dt: number,
@@ -78,6 +80,7 @@ export class BacteriaBehaviorSystem {
     nutrients: NutrientSystem,
     predators: readonly Positioned[],
     teams: TeamSystem,
+    antibodies: AntibodySystem,
   ): void {
     const aliveAllies = this.getAlive();
     for (const b of this.bacteria) {
@@ -94,9 +97,38 @@ export class BacteriaBehaviorSystem {
         continue;
       }
 
-      // 게임: 가장 가까운 영양분 (없으면 null)
-      const idx = nutrients.findNearestIndex(b.x, b.y);
-      const nutrient = idx >= 0 ? nutrients.get(idx) ?? null : null;
+      // 게임: 가장 가까운 영양분 vs 항체 비교 — 가까운 쪽이 senses.nearestNutrient.
+      //        항체는 세균 입장에서 영양분처럼 보임 (행동은 동일).
+      //        흡수 시점에 분기 — 영양분이면 분열 카운터 ↑, 항체면 HP 감소.
+      const nIdx = nutrients.findNearestIndex(b.x, b.y);
+      const nutrient = nIdx >= 0 ? nutrients.get(nIdx) ?? null : null;
+
+      const antibodyList = antibodies.getAll();
+      let abIdx = -1;
+      let abDist2 = Infinity;
+      for (let i = 0; i < antibodyList.length; i++) {
+        const ab = antibodyList[i];
+        if (ab.isAbsorbed) continue;
+        const dx = ab.x - b.x;
+        const dy = ab.y - b.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < abDist2) { abDist2 = d2; abIdx = i; }
+      }
+      const antibody = abIdx >= 0 ? antibodyList[abIdx] : null;
+
+      // 게임: 둘 중 가까운 것 선택 (edible).
+      let edible: Positioned | null = null;
+      let edibleIsAntibody = false;
+      if (nutrient !== null && antibody !== null) {
+        const dn2 = (nutrient.x - b.x) ** 2 + (nutrient.y - b.y) ** 2;
+        if (abDist2 < dn2) { edible = antibody; edibleIsAntibody = true; }
+        else { edible = nutrient; }
+      } else if (nutrient !== null) {
+        edible = nutrient;
+      } else if (antibody !== null) {
+        edible = antibody;
+        edibleIsAntibody = true;
+      }
 
       // 게임: 팀 정보 — 멤버는 getTeamFor, 커맨더는 getTeamOfCommander 로 자기 팀 조회.
       //        커맨더는 followCommander.weight=0 이라 commander 인자 영향 없지만,
@@ -120,15 +152,15 @@ export class BacteriaBehaviorSystem {
       const isAggressive = team !== null && team.mode === 'aggressive' && team.attackTarget !== null;
       const useAggressive = isAggressive && !b.isCommander();
       const driveSet: Drives = useAggressive ? AGGRESSIVE_DRIVES : b.dna.drives;
-      const target = useAggressive && team !== null && team.attackTarget !== null
+      const aggrTarget = useAggressive && team !== null && team.attackTarget !== null
         ? team.attackTarget
         : null;
 
       const senses: Senses = {
         predators,
         allies: aliveAllies,
-        nearestNutrient: nutrient,
-        nearestPrey: target,
+        nearestNutrient: edible,        // 영양분 또는 항체 (가까운 쪽). 행동상 동일.
+        nearestPrey: aggrTarget,         // 공격 모드 시 호중구 (멤버만)
         nearestCommander: null,
         nearestWorker: null,
         commander: commanderInfo,
@@ -138,15 +170,21 @@ export class BacteriaBehaviorSystem {
       const speed = b.dna.behavior.speed * b.hpRatio();
       applyDriveLerp(b, driveSet, senses, speed, b.dna.behavior.turnRate, dt);
 
-      // 게임: 흡수 판정 — 가장 가까운 영양분이 absorbRadius 안이면 소비.
-      //        목표 방향이 영양분 쪽이 아니어도 (회피 우세 시) 가까이 있으면 흡수 가능.
-      if (nutrient && idx >= 0) {
-        const dx = nutrient.x - b.x;
-        const dy = nutrient.y - b.y;
+      // 게임: 흡수 판정 — 가장 가까운 edible(영양분/항체)이 absorbRadius 안이면 소비.
+      //        영양분이면 분열 카운터 ↑, 항체면 hp 감소 (등록 X).
+      if (edible !== null) {
+        const dx = edible.x - b.x;
+        const dy = edible.y - b.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist <= b.absorbRadius()) {
-          nutrients.consume(idx, t);
-          b.registerAbsorb(t);
+          if (edibleIsAntibody && abIdx >= 0) {
+            const ab = antibodyList[abIdx];
+            ab.isAbsorbed = true;
+            b.applyDamage(ab.damage);
+          } else if (!edibleIsAntibody && nIdx >= 0) {
+            nutrients.consume(nIdx, t);
+            b.registerAbsorb(t);
+          }
         }
       }
 

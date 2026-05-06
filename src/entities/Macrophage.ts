@@ -33,8 +33,8 @@ export class Macrophage {
     this.x += this.vx * dt;
     this.y = floorY;
     this.handle.setPosition(this.x, this.y);
-    // 게임: 시각 — 평상 상태. 스케일 1.0, 활성도 0, life 1.
-    this.handle.setScale(1.0);
+    // 게임: 시각 — 바닥을 기는 느낌. 가로 1.0, 세로 0.55 로 납작 압축. 활성도 0, life 1.
+    this.handle.setScale(1.0, 0.55);
     this.handle.setVisualState({ shock: 0, combat: 0, life: 1 });
     this.handle.update(t);
   }

@@ -23,7 +23,10 @@ export interface CellRenderHandle {
   setPosition(x: number, y: number): void;
   setPhase(phase: number): void;
   // 게임: 시각 스케일 배율 (1.0 = 원본). 분열, 약화 등에 사용.
-  setScale(scale: number): void;
+  //        scaleY 생략 시 scaleX 와 동일 (균등 스케일). 다르게 주면 납작/길쭉 형태.
+  setScale(scaleX: number, scaleY?: number): void;
+  // 게임: 알파 (0=투명, 1=불투명). 미리보기 등 반투명 표시에 사용.
+  setAlpha(alpha: number): void;
   // 게임: 시각 상태 통보. shock/combat/life 채널을 한꺼번에.
   setVisualState(state: VisualState): void;
   // 게임: 매 프레임 호출. t 는 게임 시작 후 경과 시간(초).

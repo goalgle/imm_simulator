@@ -70,6 +70,12 @@ export abstract class LivingCell {
     this.hp = Math.max(0, this.hp - amount);
   }
 
+  // 게임: HP 회복. maxHp 까지 캡. 죽은 상태에선 회복 안 됨 (부활 막음).
+  heal(amount: number): void {
+    if (this.isDead()) return;
+    this.hp = Math.min(this.dna.combat.maxHp, this.hp + amount);
+  }
+
   hpRatio(): number {
     const max = this.dna.combat.maxHp;
     return max > 0 ? this.hp / max : 0;

@@ -22,6 +22,11 @@ export class WhiteCell extends LivingCell {
   private shockResponse = 0;
   // 게임: 동료 흡수 누적 카운터. 2 도달 시 슈퍼 호중구로 변환 (NEUTROPHIL 만 적용).
   mergeCounter = 0;
+  // 게임: 항체 발사 쿨다운 남은 시간 (초). B세포만 사용. ≤ 0 도달 시 발사 가능.
+  fireCooldownRemaining = 0;
+  // 게임: 호중구 레벨 (NEUTROPHIL 만 사용). T세포 commandRange 안에서 세균 죽이면 +1.
+  //        5 도달 시 NK/BCELL/SUPER 중 무작위 진화 (BloodScene 처리).
+  level = 0;
 
   constructor(
     dna: DNA,
