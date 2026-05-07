@@ -3,6 +3,7 @@
 // 추가 책임: 충격파 시각 자극(shockResponse), 마찰, 화면 경계 반사.
 
 import type { DNA } from '../domain/dna';
+import type { MutationKind } from '../domain/mutations';
 import type { CellRenderer } from '../render/CellRenderer';
 import { LivingCell, type Bounds } from './LivingCell';
 
@@ -36,6 +37,10 @@ export class WhiteCell extends LivingCell {
   // 게임: 호중구 레벨 (NEUTROPHIL 만 사용). T세포 commandRange 안에서 세균 죽이면 +1.
   //        5 도달 시 NK/BCELL/SUPER 중 무작위 진화 (BloodScene 처리).
   level = 0;
+  // 게임: 적용된 변이 종류. null = 변이 없음. setDna(dna, kind) 로 갱신.
+  //   시스템 분기 키 (Stage 11~15 예정): ContactSystem/Behavior/Macrophage 가 이 값 보고 분기.
+  //   dna.kind 는 변이 후에도 'NEUTROPHIL' 그대로 (호중구 정체성 유지) — mutation 으로 변이 식별.
+  mutation: MutationKind | null = null;
   // 게임: fusion 애니메이션 상태. processFusion 가 startFusion 호출 시 set.
   //   updateFusion 이 매 프레임 보간 → 완료 시 isAbsorbed=true 로 정리.
   private fusionTarget: WhiteCell | null = null;
@@ -57,6 +62,12 @@ export class WhiteCell extends LivingCell {
   applyShockImpulse(amount: number): void {
     if (this.isDead()) return;
     this.shockResponse = Math.min(1, this.shockResponse + amount);
+  }
+
+  // 게임: 변이 라벨 갱신. setDna 와 짝으로 호출 (setDna 가 dna 만, setMutation 이 라벨만 책임).
+  //   다중 변이 정책 (Session 17 기획): 새 변이가 기존을 덮어씀.
+  setMutation(kind: MutationKind | null): void {
+    this.mutation = kind;
   }
 
   // 게임: HP 가 임계 미만이면 약화 — 동료에게 흡수 대상.

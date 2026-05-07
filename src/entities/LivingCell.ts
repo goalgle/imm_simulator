@@ -77,6 +77,10 @@ export abstract class LivingCell {
   // 게임: DNA 교체 — 변이 적용 시 호출. handle 도 함께 갱신해 색/모양/속도가 즉시 반영됨.
   //   currentHp 는 그대로 유지 (변이 6종이 maxHp 를 안 건드림 — 관계없음).
   //   호출 후 행동 시스템이 매 프레임 dna 다시 읽으니 drives/speed/turnRate 자동 반영.
+  //
+  //   ⚠️ "변이 메커니즘" (정지/낙하/분열/scale 점감/폭발/마비 timer 등) 은 dna 만으로
+  //   표현 불가 — 자식 클래스(WhiteCell)의 mutation 필드 + 시스템 분기로 처리. 자식에서
+  //   override 하여 setMutation 같이 받게 하기를 권장 (Stage 11~15 진행 시).
   setDna(dna: DNA): void {
     this.dna = dna;
     this.handle.setDna(dna);

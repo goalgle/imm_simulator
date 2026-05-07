@@ -56,17 +56,19 @@ describe('mutationZombie', () => {
 });
 
 describe('mutationCancer', () => {
-  it('divide 활성, base 1.4배, l 어두움', () => {
+  // 게임: Session 17 디자인 변경 — 모양 유지. 색만 어둡게. 행동(정지/낙하/분열) 은 시스템 분기.
+  it('색 l 어두움', () => {
     const m = mutationCancer(NEUTROPHIL);
-    expect(m.meta.divide).toBe(0.3);
-    expect(m.shape.base).toBeCloseTo(NEUTROPHIL.shape.base * 1.4);
     expect(m.color.l).toBe(40);
   });
 
-  it('contact 0.1, w1 진폭 1.3배', () => {
+  it('shape/behavior/meta 는 원본 유지 (모양/속도/떨림 변경 X)', () => {
     const m = mutationCancer(NEUTROPHIL);
-    expect(m.behavior.contact).toBe(0.1);
-    expect(m.shape.w1.A).toBeCloseTo(NEUTROPHIL.shape.w1.A * 1.3);
+    expect(m.shape.base).toBe(NEUTROPHIL.shape.base);
+    expect(m.shape.w1.A).toBe(NEUTROPHIL.shape.w1.A);
+    expect(m.behavior.contact).toBe(NEUTROPHIL.behavior.contact);
+    expect(m.behavior.speed).toBe(NEUTROPHIL.behavior.speed);
+    expect(m.meta.divide).toBe(NEUTROPHIL.meta.divide);
   });
 });
 
@@ -87,32 +89,39 @@ describe('mutationCorruption', () => {
 });
 
 describe('mutationHyperactive', () => {
-  it('omega ×3, contact 0.7, recovery 0.2, 주황', () => {
+  // 게임: Session 17 디자인 변경 — 떨림 ×3 + 주황만. scale 점증/폭발은 시스템 분기.
+  it('omega ×3, 주황', () => {
     const m = mutationHyperactive(NEUTROPHIL);
     expect(m.shape.w1.omega).toBeCloseTo(NEUTROPHIL.shape.w1.omega * 3);
     expect(m.shape.w2.omega).toBeCloseTo(NEUTROPHIL.shape.w2.omega * 3);
     expect(m.shape.w3.omega).toBeCloseTo(NEUTROPHIL.shape.w3.omega * 3);
-    expect(m.behavior.contact).toBe(0.7);
-    expect(m.meta.recovery).toBe(0.2);
     expect(m.color.h).toBe(45);
     expect(m.color.s).toBe(90);
+  });
+
+  it('contact/recovery 는 원본 유지 (시스템 분기로 이동)', () => {
+    const m = mutationHyperactive(NEUTROPHIL);
+    expect(m.behavior.contact).toBe(NEUTROPHIL.behavior.contact);
+    expect(m.meta.recovery).toBe(NEUTROPHIL.meta.recovery);
   });
 });
 
 describe('mutationParalysis', () => {
-  it('omega 거의 0, speed 0.1, 밝은 파랑', () => {
+  // 게임: Session 17 디자인 변경 — 일반 호중구처럼 동작. 색만 밝은 파랑.
+  //   3s 주기 0.5s 마비 + 인접 전파는 시스템 분기.
+  it('밝은 파랑 (h=210, l=80)', () => {
     const m = mutationParalysis(NEUTROPHIL);
-    expect(m.shape.w1.omega).toBe(0.1);
-    expect(m.shape.w2.omega).toBe(0.2);
-    expect(m.shape.w3.omega).toBe(0.1);
-    expect(m.behavior.speed).toBe(0.1);
     expect(m.color.h).toBe(210);
     expect(m.color.l).toBe(80);
   });
 
-  it('w1.A 0.3배 축소', () => {
+  it('shape/behavior 는 원본 유지 (속도/떨림/진폭 변경 X)', () => {
     const m = mutationParalysis(NEUTROPHIL);
-    expect(m.shape.w1.A).toBeCloseTo(NEUTROPHIL.shape.w1.A * 0.3);
+    expect(m.shape.w1.omega).toBe(NEUTROPHIL.shape.w1.omega);
+    expect(m.shape.w2.omega).toBe(NEUTROPHIL.shape.w2.omega);
+    expect(m.shape.w3.omega).toBe(NEUTROPHIL.shape.w3.omega);
+    expect(m.shape.w1.A).toBe(NEUTROPHIL.shape.w1.A);
+    expect(m.behavior.speed).toBe(NEUTROPHIL.behavior.speed);
   });
 });
 

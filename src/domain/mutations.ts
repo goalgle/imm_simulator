@@ -1,9 +1,16 @@
 // 바이러스 변이 — 호중구 DNA 를 6종 변이 중 하나로 변형.
 // 시스템 구현 기획서 §2.12 — 페이즈 2 wave 종결 시 hit 카운트로 변이 종류 결정 후 적용.
-// 아이디어 기획서 §"바이러스 변이 시나리오 (총 6종)" 의 JS 명세를 TS 로 포팅.
 //
 // 모든 변이 함수는 **새 DNA 를 반환** — 입력 dna 는 변형 안 함 (immutability).
 //   호스트별 DNA 클론을 받은 뒤 거기에 적용되도록 호출자가 처리.
+//
+// ⚠️ 도메인 vs 시스템 분리 (Session 17 재정의):
+//   각 변이의 "메커니즘" 은 페이즈 1 시스템 (ContactSystem, WhiteCellBehaviorSystem,
+//   MacrophageSystem, BloodScene 등) 에 분기로 구현됨. 시스템은 `WhiteCell.mutation`
+//   필드로 어떤 변이인지 식별. 본 파일은 dna 의 시각/기본 행동 형질만 변경.
+//
+//   예: 암세포는 "정지 + 바닥 낙하 + 분열" — 행동 자체는 시스템에서. dna 는 색 어두움만.
+//       마비는 "3s 주기 0.5s 정지" — timer 는 시스템에서. dna 는 색 밝은 파랑만.
 //
 // 이 파일은 Phaser 의존 없음 (도메인 계층).
 
@@ -14,15 +21,19 @@ import { cloneDna } from './dna';
 export { cloneDna };
 
 export type MutationKind =
-  | 'zombie'       // 변이 1 — 아군 공격 (target=-1, 녹색, 느린 떨림)
-  | 'cancer'       // 변이 2 — 무한 증식 (분열↑, 비대화, 어두움)
-  | 'corruption'   // 변이 3 — 형태 붕괴 (진폭 반전, 빨강, 빠름)
-  | 'hyperactive'  // 변이 4 — 과민 반응 (떨림 ×3, 주황)
-  | 'paralysis'    // 변이 5 — 마비 (거의 정지, 밝은 파랑)
-  | 'chaos';       // 변이 6 — 카오스 (랜덤 모든 형질)
+  | 'zombie'       // 변이 1 — 호중구 우선 공격, fusion X, 호중구 vs 공격력 ×2
+  | 'cancer'       // 변이 2 — 정지 + 바닥 낙하 + 일정 시간 후 좌우 분열
+  | 'corruption'   // 변이 3 — 격렬 떨림 + scale 점감 + 소멸 시 페이즈 2 자동 진입
+  | 'hyperactive'  // 변이 4 — 격렬 떨림 + scale 점증 + 폭발 (영역 데미지)
+  | 'paralysis'    // 변이 5 — 일반 동작 + 3s 주기 0.5s 마비 (인접 호중구 전파)
+  | 'chaos';       // 변이 6 — 공격력 ×3, 호중구/세균 무차별 공격, 모든 형질 랜덤
 
-// 게임: 변이 1 — 좀비. 아군 공격 + 녹색 + 느린 떨림.
-//   target=-1 로 호중구가 다른 호중구를 공격 대상으로 인식 (ContactSystem 추가 분기 필요).
+// 게임: 변이 1 — 좀비.
+//   dna 변경: target=-1 (drives 가 동족 호중구를 prey 로 인식), 녹색 (식별), 떨림 ↓.
+//   시스템 분기 (Stage 11 예정):
+//     - ContactSystem: 호중구↔호중구 페어 검사 추가, mutation==='zombie' 면 호중구 vs 공격력 ×2
+//     - WhiteCellBehaviorSystem: zombie 호중구는 fusion 후보에서 제외, prey 후보 = 살아있는 호중구
+//     - 세균과 접촉 시는 일반 호중구와 동일 (정상 데미지)
 export function mutationZombie(dna: DNA): DNA {
   const m = cloneDna(dna);
   m.behavior.target = -1.0;
@@ -33,19 +44,23 @@ export function mutationZombie(dna: DNA): DNA {
   return m;
 }
 
-// 게임: 변이 2 — 암세포화. 분열 활성 + 비대화 + 어두움.
-//   meta.divide 가 활성화되면 NEUTROPHIL 도 분열하는 새 동작 — BehaviorSystem 분기 영향 가능.
+// 게임: 변이 2 — 암세포.
+//   dna 변경: 색 어두움만. **모양/떨림 유지** (사용자 디자인: 모양 유지한 채 바닥 낙하).
+//   시스템 분기 (Stage 12 예정):
+//     - WhiteCell: mutation==='cancer' 면 updateAlive 분기 — 행동 정지, 즉시 큰 Y (바닥) 으로 낙하
+//     - 분열 timer (~6s) → 좌우로 새 암세포 spawn (양쪽 임펄스)
+//     - MacrophageSystem: 대식세포 좌우 이동 경로에 암세포 충돌 → 정지 / 우회
 export function mutationCancer(dna: DNA): DNA {
   const m = cloneDna(dna);
-  m.meta.divide = 0.3;
-  m.shape.base *= 1.4;
-  m.behavior.contact = 0.1;
   m.color.l = 40;
-  m.shape.w1.A *= 1.3;
   return m;
 }
 
-// 게임: 변이 3 — 형태 붕괴. 진폭 반전 + 기괴한 주파수 + 빨강 + 빠름.
+// 게임: 변이 3 — 붕괴.
+//   dna 변경: 진폭 반전 + 기괴한 주파수 + 빨강 + 빠른 속도. 격렬한 시각.
+//   시스템 분기 (Stage 13 예정):
+//     - WhiteCell: mutation==='corruption' 이면 매 프레임 scale 점감 (5s 동안 1 → 0)
+//     - scale 0 도달 시 자기 소멸 + BloodScene 에 페이즈 2 자동 진입 시그널 (다른 호중구 호스트로)
 export function mutationCorruption(dna: DNA): DNA {
   const m = cloneDna(dna);
   m.shape.w1.A *= -0.8;
@@ -57,34 +72,40 @@ export function mutationCorruption(dna: DNA): DNA {
   return m;
 }
 
-// 게임: 변이 4 — 과민. 떨림 ×3 + 큰 접촉 충격 + 느린 회복 + 주황.
+// 게임: 변이 4 — 과민.
+//   dna 변경: 떨림 ×3 + 주황. 격렬한 시각.
+//   시스템 분기 (Stage 14 예정):
+//     - WhiteCell: mutation==='hyperactive' 이면 매 프레임 scale 점증 (4s 동안 1 → 2.5)
+//     - 임계 도달 시 폭발: 반경 ~200px 내 살아있는 호중구/세균 모두 즉사 + 본인도 소멸
+//     - 폭발 시각 (큰 펄스 + 화면 흔들림) 은 폴리싱
 export function mutationHyperactive(dna: DNA): DNA {
   const m = cloneDna(dna);
   m.shape.w1.omega *= 3.0;
   m.shape.w2.omega *= 3.0;
   m.shape.w3.omega *= 3.0;
-  m.behavior.contact = 0.7;
-  m.meta.recovery = 0.2;
   m.color.h = 45;
   m.color.s = 90;
   return m;
 }
 
-// 게임: 변이 5 — 마비. 거의 정지 + 밝은 파랑.
+// 게임: 변이 5 — 마비.
+//   dna 변경: 색 밝은 파랑만. **속도/떨림 정상** (사용자 디자인: 일반 호중구처럼 동작).
+//   시스템 분기 (Stage 15 예정):
+//     - WhiteCell: mutation==='paralysis' 이면 3s 주기로 0.5s 마비 timer
+//     - 마비 활성 시 행동 시스템 입력 무시 (정지)
+//     - 마비 활성 시 인접 호중구 (~60px) 도 0.5s 마비로 전파
 export function mutationParalysis(dna: DNA): DNA {
   const m = cloneDna(dna);
-  m.shape.w1.omega = 0.1;
-  m.shape.w2.omega = 0.2;
-  m.shape.w3.omega = 0.1;
-  m.behavior.speed = 0.1;
   m.color.h = 210;
   m.color.l = 80;
-  m.shape.w1.A *= 0.3;
   return m;
 }
 
-// 게임: 변이 6 — 카오스. 모든 형질 랜덤화.
-//   random 함수를 인자로 받음 — 테스트 가능성 (deterministic seed 가능).
+// 게임: 변이 6 — 카오스.
+//   dna 변경: 모든 형질 랜덤화. random 함수 인자로 받음 (테스트 deterministic).
+//   시스템 분기 (Stage 11 통합 예정 — 좀비 분기 재사용):
+//     - ContactSystem: mutation==='chaos' 면 호중구↔호중구 + 호중구↔세균 모두 공격, 데미지 ×3
+//     - drives prey 후보 = 모든 살아있는 LivingCell (자기 제외)
 export function mutationChaos(dna: DNA, random: () => number = Math.random): DNA {
   const m = cloneDna(dna);
   // shape.n 랜덤 2~15

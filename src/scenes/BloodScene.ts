@@ -946,6 +946,7 @@ export class BloodScene extends Phaser.Scene {
     if (this.hostCell !== null && !this.hostCell.isDead()) {
       const newDna = applyMutation(this.hostCell.dna, kind);
       this.hostCell.setDna(newDna);
+      this.hostCell.setMutation(kind);
     }
     const info = MUTATION_INFO[kind];
     this.mutationText?.setText(`변이 ${info.num} 발생\n${info.label}\nhits ${wave.hits}/${WAVE_TOTAL}`);

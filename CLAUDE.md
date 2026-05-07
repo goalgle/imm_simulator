@@ -43,7 +43,16 @@ Stimuli go into `VisualState { shock, combat, life }` and the renderer composes 
 
 ### Game-design files are authoritative
 
-`docs/시스템_구현_기획서.md` is a long, evolving spec (sessions logged in order at the top). When making non-trivial mechanic changes, read the relevant `§` and update the doc in the same change. `docs/immune_simulator_기획서.md` is the higher-level concept doc.
+`docs/` was reorganized in Session 17. Start at `docs/README.md` (1-page index). Key files:
+- `docs/시스템.md` — code-mapped system spec. Read the relevant § and update in the same change as code changes.
+- `docs/변이.md` — mutation 6 types (dna changes + system branches). Currently has options A/B/C unmerged.
+- `docs/컨셉.md` — game vision (older / less code-coupled).
+- `docs/TODO.md` — current work, Stage 11~15 plan.
+- `docs/세션_로그.md` — append-only session history.
+- `docs/마일스톤.md` — milestone progress.
+- `docs/archive/` — pre-Session 17 single big files (preserved).
+
+A/B/C labeled regions (e.g. mutation values, white cell rosters) are unmerged design alternatives — don't auto-pick. Bring to user when relevant.
 
 ## Conventions
 
