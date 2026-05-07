@@ -19,13 +19,14 @@ import { WhiteCell as WhiteCellCtor } from '../entities/WhiteCell';
 import type { Bacteria } from '../entities/Bacteria';
 import type { Senses, Positioned } from '../domain/drives';
 import { applyDriveLerp } from './behaviorHelpers';
-import { NEUTROPHIL, NEUTROPHIL_SUPER, BCELL } from '../domain/dna';
+import { NEUTROPHIL_SUPER } from '../domain/dna';
 import type { CellRenderer } from '../render/CellRenderer';
 import type { AntibodySystem } from './AntibodySystem';
 
 // 게임: 흡수 발동 거리 = baseRadius 합 + 이 padding.
-//        분리력보다 살짝 짧게 두어 흡수가 우선되도록.
-const FUSION_PADDING = 2;
+//   2 → 20 (Session 16) — 분리력(SEPARATION_PADDING=4, strength=400 px/s²)에 밀려나기 전
+//   여유를 두어 흡수가 자주 발동하도록 완화. 두 호중구가 살짝 부딪히는 정도면 흡수.
+const FUSION_PADDING = 20;
 
 // 게임: 슈퍼 호중구로 변환되는 누적 흡수 횟수.
 const FUSION_THRESHOLD = 2;
@@ -86,9 +87,9 @@ export class WhiteCellBehaviorSystem {
       }
 
       // 게임: NEUTROPHIL 만 prey 동적 분기 — 동료 흡수 행동.
-      //        DNA 동등성 비교: 같은 NEUTROPHIL 객체 참조면 일반 호중구.
+      //        dnaKind 비교: 변이 후에도 호중구 정체성 유지.
       let prey: Positioned | null = nearestPrey;
-      if (cell.dna === NEUTROPHIL) {
+      if (cell.dnaKind === 'NEUTROPHIL') {
         const allyTarget = this.findAllyTarget(cell, aliveAllies);
         if (allyTarget !== null) {
           prey = allyTarget; // 동료 우선 (자기 약하면 강한 동료, 자기 강하면 약한 동료)
@@ -123,7 +124,7 @@ export class WhiteCellBehaviorSystem {
   private processBCellFiring(dt: number, bacteria: readonly Bacteria[]): void {
     for (const cell of this.cells) {
       if (cell.isDead()) continue;
-      if (cell.dna !== BCELL) continue;
+      if (cell.dnaKind !== 'BCELL') continue;
 
       cell.fireCooldownRemaining -= dt;
       if (cell.fireCooldownRemaining > 0) continue;
@@ -176,7 +177,7 @@ export class WhiteCellBehaviorSystem {
     const wantWeak = !self.isWeak(); // 자기 강함 → 약한 동료, 자기 약함 → 강한 동료
     for (const ally of aliveAllies) {
       if (ally === self) continue;
-      if (ally.dna !== NEUTROPHIL) continue; // 일반 호중구끼리만
+      if (ally.dnaKind !== 'NEUTROPHIL') continue; // 일반 호중구끼리만
       const allyWeak = ally.isWeak();
       if (wantWeak && !allyWeak) continue;
       if (!wantWeak && allyWeak) continue;
@@ -194,7 +195,8 @@ export class WhiteCellBehaviorSystem {
   //         강한 호중구 mergeCounter +1. 2 도달 시 슈퍼 호중구로 변환.
   private processFusion(): void {
     const candidates = this.cells.filter(
-      (c) => !c.isDead() && !c.isAbsorbed && c.dna === NEUTROPHIL,
+      // 게임: fusing 중인 cell 은 제외 — 중복 흡수 / target 변경 회피.
+      (c) => !c.isDead() && !c.isAbsorbed && !c.isFusing() && c.dnaKind === 'NEUTROPHIL',
     );
     const transformed: { x: number; y: number }[] = [];
 
@@ -218,10 +220,13 @@ export class WhiteCellBehaviorSystem {
 
         const weak = aWeak ? a : b;
         const strong = aWeak ? b : a;
-        weak.isAbsorbed = true;
+        // 게임: 즉시 isAbsorbed 대신 애니메이션 시작 — weak 가 strong 으로 빨려들어감.
+        //   완료(0.35s 후) 시 weak.isAbsorbed=true 로 자동 정리.
+        weak.startFusion(strong);
         strong.mergeCounter++;
         if (strong.mergeCounter >= FUSION_THRESHOLD) {
           // 슈퍼 호중구 변환: 자기 정리 + 같은 자리에 NEUTROPHIL_SUPER 생성.
+          //   weak 의 fusion 애니메이션은 target.x/y 마지막 좌표를 계속 읽으므로 안전.
           transformed.push({ x: strong.x, y: strong.y });
           strong.isAbsorbed = true;
         }

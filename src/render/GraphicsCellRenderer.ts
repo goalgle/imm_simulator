@@ -18,7 +18,6 @@
 
 import Phaser from 'phaser';
 import type { DNA } from '../domain/dna';
-import { BACTERIA_COMMANDER, NEUTROPHIL_SUPER, TCELL } from '../domain/dna';
 import { hslToRgbInt } from '../domain/color';
 import { generatePolygon, type Point } from '../domain/shapeFunction';
 import type { CellRenderer, CellRenderHandle, VisualState } from './CellRenderer';
@@ -172,6 +171,13 @@ class GraphicsHandle implements CellRenderHandle {
     this.visual.shock = clamp01(state.shock);
     this.visual.combat = clamp01(state.combat);
     this.visual.life = clamp01(state.life);
+  }
+
+  // 게임: DNA 교체 — reference 만 갈아끼움. update() 가 매 프레임 this.dna 동적 참조하므로
+  //   다음 프레임부터 새 색/shape 로 그려짐. PostFX(영웅 glow) 는 생성자 1회 적용이라 갱신 X.
+  //   현재 변이 6종은 호중구→호중구 (영웅 변환 없음) 이라 무관.
+  setDna(dna: DNA): void {
+    this.dna = dna;
   }
 
   update(t: number): void {
@@ -331,7 +337,7 @@ function scalePoints(src: Point[], dst: Point[], scale: number, ox = 0, oy = 0):
 
 // 게임: 영웅급 DNA 판별. 새 영웅급(예: NK) 추가하려면 여기에 한 줄.
 function isHeroDna(dna: DNA): boolean {
-  return dna === BACTERIA_COMMANDER || dna === TCELL || dna === NEUTROPHIL_SUPER;
+  return dna.kind === 'BACTERIA_COMMANDER' || dna.kind === 'TCELL' || dna.kind === 'NEUTROPHIL_SUPER';
 }
 
 // 게임: 영웅 glow 색 — DNA hue 유지, 채도/명도만 ↑. 자기 색이 발산되는 인상.

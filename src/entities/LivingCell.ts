@@ -12,7 +12,8 @@
 //   - 종족 고유 형질 (호중구의 shockResponse, 세균의 mitosis 등)
 //   - onDeath() override — 사망 직후 정리 (예: 분열 중단)
 
-import type { DNA } from '../domain/dna';
+import type { DNA, DnaKind } from '../domain/dna';
+import { cloneDna } from '../domain/dna';
 import type { CellRenderer, CellRenderHandle } from '../render/CellRenderer';
 
 export type Bounds = {
@@ -46,18 +47,39 @@ export abstract class LivingCell {
   protected hp: number;
   // 게임: 대식세포가 흡수했음을 표시. BloodScene 이 매 프레임 끝에 청소.
   isAbsorbed = false;
+  // 게임: 인스턴스 보유 DNA. 생성 시 클론으로 받아 cell 마다 독립.
+  //        readonly 아님 — 변이 적용 시 setDna 로 교체 (Stage 6 예정).
+  //        외부에서 직접 할당 X. dnaKind getter 로 종족 비교.
+  public dna: DNA;
 
   constructor(
-    public readonly dna: DNA,
+    initialDna: DNA,
     renderer: CellRenderer,
     public x: number,
     public y: number,
     phase = 0,
     initialHp?: number,
   ) {
-    this.handle = renderer.create(dna, x, y);
+    // 게임: 매 cell 이 자기 DNA 인스턴스 보유 — preset reference 공유 X.
+    //        변이가 다른 cell 로 새지 않도록 격리.
+    this.dna = cloneDna(initialDna);
+    this.handle = renderer.create(this.dna, x, y);
     this.handle.setPhase(phase);
-    this.hp = initialHp ?? dna.combat.maxHp;
+    this.hp = initialHp ?? this.dna.combat.maxHp;
+  }
+
+  // 게임: DNA 정체성 라벨 — reference 비교 (`cell.dna === NEUTROPHIL`) 대체용.
+  //        변이 후에도 보존됨 (dna.kind 는 cloneDna/mutation 통과 시 유지).
+  get dnaKind(): DnaKind {
+    return this.dna.kind;
+  }
+
+  // 게임: DNA 교체 — 변이 적용 시 호출. handle 도 함께 갱신해 색/모양/속도가 즉시 반영됨.
+  //   currentHp 는 그대로 유지 (변이 6종이 maxHp 를 안 건드림 — 관계없음).
+  //   호출 후 행동 시스템이 매 프레임 dna 다시 읽으니 drives/speed/turnRate 자동 반영.
+  setDna(dna: DNA): void {
+    this.dna = dna;
+    this.handle.setDna(dna);
   }
 
   // 게임: ContactSystem 이 매 프레임 접촉 중일 때 호출.

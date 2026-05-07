@@ -18,7 +18,7 @@ export type VisualState = {
 };
 
 // 게임: 한 세포의 렌더 핸들. 위치/위상/스케일/시각상태/시간 갱신과 파괴를 책임.
-//        DNA 자체는 핸들 생성 시 결정되며 이후 불변 (변이는 새 핸들 생성으로 처리).
+//        DNA 는 setDna 로 도중 교체 가능 — 변이 적용 시 핸들 재사용 (LivingCell.setDna 호출 경로).
 export interface CellRenderHandle {
   setPosition(x: number, y: number): void;
   setPhase(phase: number): void;
@@ -29,6 +29,10 @@ export interface CellRenderHandle {
   setAlpha(alpha: number): void;
   // 게임: 시각 상태 통보. shock/combat/life 채널을 한꺼번에.
   setVisualState(state: VisualState): void;
+  // 게임: DNA 교체 — 변이로 색/모양/속도가 즉시 바뀜.
+  //        구현체는 다음 update() 에서 새 dna 의 color/shape/wave 로 polygon 재생성.
+  //        영웅급 PostFX 등 생성자에서 1회 적용된 효과는 갱신되지 않음 (현재 변이 6종은 영웅 변환 없음).
+  setDna(dna: DNA): void;
   // 게임: 매 프레임 호출. t 는 게임 시작 후 경과 시간(초).
   update(t: number): void;
   destroy(): void;

@@ -10,7 +10,6 @@ import type { WhiteCell } from '../entities/WhiteCell';
 import type { Bacteria } from '../entities/Bacteria';
 import type { TeamSystem } from './TeamSystem';
 import { isContacting } from '../domain/contact';
-import { NEUTROPHIL, TCELL } from '../domain/dna';
 
 const COMBAT_STIMULUS_RATE = 2.0;
 
@@ -56,7 +55,7 @@ export class ContactSystem {
 
         // 게임: 세균 방금 사망 + 죽인 게 NEUTROPHIL 인 호중구 →
         //        T세포 commandRange 안이면 호중구 level +1 (5 도달 시 진화는 BloodScene 처리).
-        if (bDiedNow && w.dna === NEUTROPHIL) {
+        if (bDiedNow && w.dnaKind === 'NEUTROPHIL') {
           rewardNeutrophilLevelup(w, whiteCells);
         }
       }
@@ -73,7 +72,7 @@ function rewardNeutrophilLevelup(killer: WhiteCell, cells: readonly WhiteCell[])
   let bestRange2 = 0;
   let inRange = false;
   for (const c of cells) {
-    if (c.dna !== TCELL) continue;
+    if (c.dnaKind !== 'TCELL') continue;
     if (c.isDead()) continue;
     const dx = killer.x - c.x;
     const dy = killer.y - c.y;

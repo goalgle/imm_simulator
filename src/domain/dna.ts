@@ -13,6 +13,20 @@ export type Wave = {
   omega: number;   // 시간주파수 (rad/sec). 클수록 빠르게 출렁임
 };
 
+// 게임: DNA 정체성 라벨. 각 preset 이 자기 종을 식별.
+//   변이가 일어나도 dnaKind 는 보존됨 — "변이된 호중구도 여전히 NEUTROPHIL".
+//   reference 비교 (`cell.dna === NEUTROPHIL`) 는 cell DNA 를 클론한 시점부터 깨지므로,
+//   이 라벨로 비교 (`cell.dnaKind === 'NEUTROPHIL'`).
+export type DnaKind =
+  | 'NEUTROPHIL'
+  | 'NEUTROPHIL_SUPER'
+  | 'NK_CELL'
+  | 'BCELL'
+  | 'TCELL'
+  | 'BACTERIA_A'
+  | 'BACTERIA_COMMANDER'
+  | 'MACROPHAGE';
+
 // 게임: 지휘(command) 형질. 모든 종이 동일 구조 보유, 일반 종은 무영향(0) 값.
 //   baseTeamSize=0 인 엔티티는 "지휘관 아님" 으로 판정. >=1 이면 지휘관.
 //   영양분 흡수 시 시야/지휘범위 ↑ + 레벨업 (분열 X — 별도 분기).
@@ -50,6 +64,7 @@ export type Drives = {
 };
 
 // 게임: 세포 1개의 정본 DNA.
+//   kind     : 정체성 라벨 — 변이 후에도 보존 (cloneDna 가 자동 보존)
 //   shape    : r(θ, t) 함수의 파라미터
 //   color    : HSL (h 0~360, s/l 0~100). 활성화 보간을 위해 RGB 가 아닌 HSL 채택.
 //   behavior : 이동/접촉 기본 형질
@@ -59,6 +74,7 @@ export type Drives = {
 //   armament : 발사체 형질 (M7 — B세포가 사용)
 //   meta     : 회복/분열 등 보조 형질
 export type DNA = {
+  kind: DnaKind;
   shape: {
     base: number;            // 평균 반지름 (px). 대략적 시각 크기.
     w1: Wave;                // 1차 변형 (저주파 / 큰 출렁임)
@@ -111,6 +127,7 @@ export type Armament = {
 //   seekPrey weight=1.0 으로 가장 가까운 세균을 추적.
 //   충격파에 의한 가속과 자체 추진이 가산되어 "관전형 + 결정적 개입" 균형.
 export const NEUTROPHIL: DNA = {
+  kind: 'NEUTROPHIL',
   shape: {
     base: 32,                          // 큰 편 — 세균(18) 보다 시각 우위
     w1: { A: 0.30, n: 4, omega: 2.5 }, // 4 돌기, 큰 출렁임
@@ -166,6 +183,7 @@ export const NEUTROPHIL: DNA = {
 //     - 커맨더 없으면 일반 세균 fallback (seekPrey 0.7)
 //   색상: 진한 청보라 — 슈퍼 호중구(분홍 보라) 와 명확히 구분.
 export const NK_CELL: DNA = {
+  kind: 'NK_CELL',
   shape: {
     base: 22,                          // 작음 (호중구 32 의 ~70%)
     w1: { A: 0.35, n: 5, omega: 4.0 }, // 5 돌기, 빠른 떨림
@@ -218,6 +236,7 @@ export const NK_CELL: DNA = {
 //     - 항체는 사거리 만료 시 정지 후 그 자리에 남음
 //   색상: 연보라 (아이디어 기획서 §B세포).
 export const BCELL: DNA = {
+  kind: 'BCELL',
   shape: {
     base: 20,                          // 작음
     w1: { A: 0.20, n: 2, omega: 1.0 }, // 2 돌기 — 거의 원형
@@ -279,6 +298,7 @@ export const BCELL: DNA = {
 //     - baseTeamSize=0 (세균 커맨더와 다름 — isCommander 헬퍼는 false)
 //   색상: 진한 청록 (아이디어 기획서 §T세포).
 export const TCELL: DNA = {
+  kind: 'TCELL',
   shape: {
     base: 24,                          // 호중구(32) 보다 작음, NK(22) 보다 약간 큼
     w1: { A: 0.25, n: 3, omega: 3.5 },
@@ -329,6 +349,7 @@ export const TCELL: DNA = {
 //   - 색조 확연히 다름 (진한 보라) — 시각적 식별 우선
 //   - drives 는 일반과 동일 (seekPrey 추적)
 export const NEUTROPHIL_SUPER: DNA = {
+  kind: 'NEUTROPHIL_SUPER',
   shape: {
     base: 40,                          // 가장 큼 — 호중구(32) ×1.25
     w1: { A: 0.30, n: 4, omega: 2.5 }, // 일반 호중구와 동일 wave 형태
@@ -381,6 +402,7 @@ export const NEUTROPHIL_SUPER: DNA = {
 //   - speed 30 px/s, turnRate 3.0 (방향 전환 약 0.33초)
 //   - drives: avoidPredator 가 weight 1.0 으로 dominant, seekNutrient 0.6, spaceAlly 0.3
 export const BACTERIA_A: DNA = {
+  kind: 'BACTERIA_A',
   shape: {
     base: 18,                          // 작음 (호중구 32 보다 작음)
     w1: { A: 0.20, n: 5, omega: 1.5 }, // 5 돌기 — 호중구(4) 보다 불규칙
@@ -432,6 +454,7 @@ export const BACTERIA_A: DNA = {
 //   - 분열 X (대신 영양분 → 레벨업 → 팀원 증가)
 //   - HP/공격력 일반보다 강함
 export const BACTERIA_COMMANDER: DNA = {
+  kind: 'BACTERIA_COMMANDER',
   shape: {
     base: 20,                          // 일반 세균(18) 보다 약간만 큼.
     w1: { A: 0.18, n: 5, omega: 1.2 },
@@ -487,6 +510,7 @@ export const BACTERIA_COMMANDER: DNA = {
 //   - 자체 추진 속도는 MacrophageSystem 내부 상수로
 //   - drives 모두 0 (별도 시스템이 행동 제어)
 export const MACROPHAGE: DNA = {
+  kind: 'MACROPHAGE',
   // 게임: 작고 납작 — base 25 + Macrophage.update 가 setScale(1.0, 0.55) 로 Y 압축.
   //        외곽이 더 불규칙 (A 큼 + n 다양) → 둥근 공보다 "기어다니는" 모호한 형태.
   shape: {
@@ -533,3 +557,10 @@ export const MACROPHAGE: DNA = {
     divide: 0,
   },
 };
+
+// 게임: DNA deep clone — JSON 방식. 단순/순수 이지만 hot path 가 아니므로 OK.
+//   호출 시점: cell 생성 시 (1회), 변이 적용 시 (1회). 매 프레임 X.
+//   kind 등 모든 필드가 자동 보존됨.
+export function cloneDna(dna: DNA): DNA {
+  return JSON.parse(JSON.stringify(dna)) as DNA;
+}

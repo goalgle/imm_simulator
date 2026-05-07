@@ -23,6 +23,7 @@ import { AntibodySystem } from '../systems/AntibodySystem';
 import { AntibodyRenderer } from '../render/AntibodyRenderer';
 import { applySeparation } from '../domain/separation';
 import { evaluateRadius } from '../domain/shapeFunction';
+import { pickMutation, applyMutation, type MutationKind } from '../domain/mutations';
 
 // 게임: 초기 호중구 수.
 const NEUTROPHIL_COUNT = 10;
@@ -52,9 +53,10 @@ const ANTIBODY_MAX_STOPPED = 5;
 // 게임: 영양분 슬롯 수 (고정). 소비 후 일정 지연 뒤 재활성화.
 const NUTRIENT_COUNT = 40;
 // 게임: 영양분 생성 영역 — 화면 사각 테두리에서 안쪽으로 이만큼 들여서 배치.
-//       세균이 구석에 쏠리지 않도록 충분히 안쪽 (100px).
+//       세균이 구석에 쏠려 영양분에 닿지 못하는 케이스 방지.
+//       100 → 160 (Session 16) — 세균 baseRadius(18) + wobble + 분리력 여유.
 const NUTRIENT_MARGIN = 100;
-const NUTRIENT_RESPAWN_DELAY = 4;
+const NUTRIENT_RESPAWN_DELAY = 5;
 
 // 게임: 충격파 자원/파동 파라미터.
 const SHOCKWAVE_CONFIG = {
@@ -81,6 +83,112 @@ const COMMANDER_EVOLUTION_DELAY = 10;
 //   strength : 가속도 (px/s²). 강하면 빠르게 분리, 약하면 자연스럽게 떨어짐.
 const SEPARATION_PADDING = 4;
 const SEPARATION_STRENGTH = 400;
+
+// 게임: 페이즈 2 바이러스 — 패턴별 이동.
+//   parametric position (innerTime 기반) 으로 계산 — dt 적분 누적 오류 회피.
+//   straight: spawn → 중앙 직선
+//   zigzag  : 직선 경로 위에 수직 sin 진동
+//   curve   : 중앙 기준 spiral (각속도 + 안쪽으로 이동)
+type Virus = {
+  kind: 'straight' | 'zigzag' | 'curve';
+  bornTime: number;
+  spawnX: number;
+  spawnY: number;
+  baseDirX: number;       // straight/zigzag: 정규화된 진행 방향
+  baseDirY: number;
+  speed: number;          // straight/zigzag: px/s
+  amplitude: number;      // zigzag: 수직 진동 진폭 (px)
+  frequency: number;      // zigzag: rad/s
+  initialDist: number;    // curve: 중앙 → spawn 거리
+  initialAngle: number;   // curve: 중앙 → spawn 각도
+  angularVelocity: number; // curve: rad/s
+  inwardSpeed: number;    // curve: 중앙 향한 px/s
+  x: number;              // 현재 위치 (hit test 용)
+  y: number;
+  gfx: Phaser.GameObjects.Graphics;
+};
+
+// 게임: 쉴드 차단 시 바이러스 자리에 표시되는 소멸 이펙트.
+//   bornTime: innerTime 기준 spawn 시각. duration 경과 시 자동 정리.
+type ShieldHitEffect = {
+  x: number;
+  y: number;
+  bornTime: number;
+  gfx: Phaser.GameObjects.Graphics;
+};
+
+// 게임: 쉴드 차단 이펙트 파라미터.
+//   원이 RADIUS_START → RADIUS_END 로 커지며 알파 1 → 0 으로 페이드.
+const SHIELD_HIT_DURATION = 0.25;
+const SHIELD_HIT_RADIUS_START = 6;
+const SHIELD_HIT_RADIUS_END = 22;
+const SHIELD_HIT_COLOR = 0x88ccff;
+
+// 게임: 페이즈 2 wave 진행 상태. enterInside 에서 새로 만들고 exitInside 에서 null.
+//   spawnQueue        : 남은 spawn 패턴 큐 (초기 WAVE_TOTAL 개)
+//   nextSpawnTime     : innerTime 기준 다음 spawn 시각 (초)
+//   hits              : DNA 도달 누적 카운트 (변이 매핑 입력)
+//   resolved          : 변이 결정 완료 여부 (결과 표시 후 자동 복귀까지 한 번만)
+//   resolvedAt        : finalize 시점 innerTime (자동 복귀 타이밍 측정)
+//   shieldCharges     : 남은 쉴드 발동 횟수 (시작 WAVE_SHIELD_CHARGES)
+//   shieldActiveUntil : 쉴드 활성 만료 시각 (innerTime). t 가 이 값 미만이면 쉴드 ON.
+type WaveState = {
+  spawnQueue: Virus['kind'][];
+  nextSpawnTime: number;
+  hits: number;
+  resolved: boolean;
+  resolvedAt: number;
+  shieldCharges: number;
+  shieldActiveUntil: number;
+};
+
+// 게임: 페이즈 2 wave 파라미터 (기획서 §2.12).
+//   WAVE_TOTAL  : wave 당 바이러스 수 (10발)
+//   WAVE_SPAWN_INTERVAL : 연속 spawn 간격 (초)
+//   WAVE_FIRST_DELAY    : 진입 후 첫 발까지 여유 (시각 안정화)
+//   WAVE_RESULT_DELAY   : 변이 결과 텍스트 표시 시간 (초) → 자동 페이즈 1 복귀
+//   WAVE_KIND_DISTRIBUTION : 10발 패턴 분포 (4 직진 / 3 지그재그 / 3 커브). 매 wave shuffle.
+const WAVE_TOTAL = 10;
+const WAVE_SPAWN_INTERVAL = 0.8;
+const WAVE_FIRST_DELAY = 0.6;
+const WAVE_RESULT_DELAY = 1.5;
+const WAVE_KIND_DISTRIBUTION: Virus['kind'][] = [
+  'straight', 'straight', 'straight', 'straight',
+  'zigzag', 'zigzag', 'zigzag',
+  'curve', 'curve', 'curve',
+];
+
+// 게임: 변이 종류 → UI 라벨 (1~6 번호 + 한글). 기획서 §2.12 의 매핑.
+const MUTATION_INFO: Record<MutationKind, { num: number; label: string }> = {
+  zombie:      { num: 1, label: '좀비 (아군 공격)' },
+  cancer:      { num: 2, label: '암세포 (분열↑)' },
+  corruption:  { num: 3, label: '형태 붕괴' },
+  hyperactive: { num: 4, label: '과민 반응' },
+  paralysis:   { num: 5, label: '마비' },
+  chaos:       { num: 6, label: '카오스 (랜덤)' },
+};
+
+// 게임: DNA 시각화 — 10 세그먼트. hit 카운트 만큼 인덱스 0 부터 corrupted (빨강 톤).
+//   기획서 §2.12 의 시각용 추상 — 게임 로직은 hits 카운트만 사용.
+const DNA_SEGMENTS = 10;
+
+// 게임: 쉴드 (Stage 4 — 단일 쉴드 안).
+//   유저 클릭 → DNA 자체에 ~0.3s 동안 쉴드 활성, 그 사이 DNA 중심에 도달한 바이러스는
+//   hits 미증가 + 즉시 소멸. 한 번의 쉴드로 같은 타이밍의 다발 바이러스 다 막힘.
+//   바이러스 속도 랜덤화로 도달 타이밍이 흩어져 "한 번에 몰린 순간" 이 생김.
+const WAVE_SHIELD_CHARGES = 5;
+const WAVE_SHIELD_DURATION = 0.3;
+// 게임: DNA 라인 두께 — 평소(strand 2.5/pair 1.2) → 쉴드 활성 시 두꺼움.
+//   별도 링/콘 없이 DNA 선 자체가 굵어지는 펄스로 쉴드 시각 표현.
+const DNA_STRAND_WIDTH = 2.5;
+const DNA_STRAND_WIDTH_SHIELD = 5.5;
+const DNA_PAIR_WIDTH = 1.2;
+const DNA_PAIR_WIDTH_SHIELD = 3.0;
+
+// 게임: 바이러스 spawn 속도 랜덤 범위 (px/s).
+//   모든 패턴 (직진/지그재그/커브) 의 baseline speed — 도달 타이밍이 흩어지도록 랜덤.
+const VIRUS_SPEED_MIN = 40;
+const VIRUS_SPEED_MAX = 80;
 
 export class BloodScene extends Phaser.Scene {
   private cellRenderer!: CellRenderer;
@@ -119,14 +227,20 @@ export class BloodScene extends Phaser.Scene {
   //   hostCell    — 줌인 대상 호중구. inside 진행 중 reference 보존, 복귀 시 null.
   //   innerTime   — 내부 가상 시간 (초). 매 inside 진입 시 0 으로 리셋 (단순화).
   //   dnaGfx      — 중앙 DNA 나선 placeholder. 첫 진입 시 lazy 생성, 이후 재사용.
-  //   viruses     — 클릭으로 spawn 된 placeholder 바이러스들 (직진).
+  //   viruses     — wave 로 spawn 된 바이러스들 (직진/지그재그/커브).
+  //   waveState   — 진행 중인 wave (spawn 큐, hit 카운트, 결과 처리). null = wave 없음.
+  //   innerHud / mutationText — 페이즈 2 전용 HUD (hits/rate, 변이 결과 텍스트).
   private outerLayer!: Phaser.GameObjects.Layer;
   private innerLayer!: Phaser.GameObjects.Layer;
   private cam2!: Phaser.Cameras.Scene2D.Camera;
   private hostCell: import('../entities/WhiteCell').WhiteCell | null = null;
   private innerTime = 0;
   private dnaGfx: Phaser.GameObjects.Graphics | null = null;
-  private viruses: Array<{ x: number; y: number; vx: number; vy: number; gfx: Phaser.GameObjects.Graphics }> = [];
+  private viruses: Virus[] = [];
+  private shieldHitEffects: ShieldHitEffect[] = [];
+  private waveState: WaveState | null = null;
+  private innerHud: Phaser.GameObjects.Text | null = null;
+  private mutationText: Phaser.GameObjects.Text | null = null;
   // 진단: updateInside 첫 호출 1회만 로그 (매 프레임 floods 방지).
   private updateInsideLogged = false;
   private debugHud!: Phaser.GameObjects.Text;
@@ -152,6 +266,10 @@ export class BloodScene extends Phaser.Scene {
     this.innerTime = 0;
     this.dnaGfx = null;
     this.viruses = [];
+    this.shieldHitEffects = [];
+    this.waveState = null;
+    this.innerHud = null;
+    this.mutationText = null;
     this.updateInsideLogged = false;
     const W = this.scale.width;
     const H = this.scale.height;
@@ -248,13 +366,11 @@ export class BloodScene extends Phaser.Scene {
         this.confirmPlacement(pointer.x, pointer.y);
         return;
       }
-      // 게임: 세포 내부 — 클릭 방향의 wall 한 점에서 placeholder 바이러스 spawn.
+      // 게임: 페이즈 2 (inside) — 클릭으로 쉴드 발동.
+      //        DNA 자체에 ~0.3s 동안 쉴드 활성. 그 시간 안에 DNA 중심에 도달한 바이러스는
+      //        hits 미증가 + 소멸. 한 번 발동으로 같은 타이밍의 다발 바이러스 다 막힘.
       if (this.phase === 'inside') {
-        const cx = this.scale.width / 2;
-        const cy = this.scale.height / 2;
-        const angle = Math.atan2(pointer.y - cy, pointer.x - cx);
-        console.log('[pointerdown inside] click=', pointer.x, pointer.y, 'angle=', angle.toFixed(2));
-        this.spawnVirus(angle);
+        this.tryActivateShield();
         return;
       }
       // 게임: 줌 전환 중에는 클릭 무시 (충격파 발사 차단).
@@ -374,7 +490,7 @@ export class BloodScene extends Phaser.Scene {
     if (this.placementQueue.length === 0) return;
     const slot = this.placementQueue.shift()!;
     const phase = Math.random() * Math.PI * 2;
-    if (slot.dna === BACTERIA_COMMANDER) {
+    if (slot.dna.kind === 'BACTERIA_COMMANDER') {
       this.bacteriaBehavior.spawn(slot.dna, x, y, phase);
     } else {
       // 게임: 호중구류 (TCELL/BCELL/NEUTROPHIL/...) 는 모두 WhiteCell 풀.
@@ -390,11 +506,14 @@ export class BloodScene extends Phaser.Scene {
   private zoomIntoNeutrophil(): void {
     console.log('[zoomIntoNeutrophil] phase=', this.phase);
     if (this.phase !== 'running') return;
-    const target = this.whiteCellBehavior.getAlive().find((c) => c.dna === NEUTROPHIL);
-    if (!target) {
+    // 게임: 살아있는 일반 호중구 (NEUTROPHIL) 후보 중 무작위 선정.
+    //   진화한 NK/SUPER/BCELL/TCELL 은 제외 — 변이는 일반 호중구 대상.
+    const candidates = this.whiteCellBehavior.getAlive().filter((c) => c.dnaKind === 'NEUTROPHIL');
+    if (candidates.length === 0) {
       console.log('[zoomIntoNeutrophil] no NEUTROPHIL target found');
       return;
     }
+    const target = candidates[Math.floor(Math.random() * candidates.length)];
 
     this.hostCell = target;
     this.phase = 'zoomingIn';
@@ -417,54 +536,87 @@ export class BloodScene extends Phaser.Scene {
   }
 
   // 게임: 줌인 완료 → 세포 내부 phase. innerTime 0 부터, cam2 visible, inner 컨텐츠 보장.
+  //   wave 새로 생성 — 패턴 분포 shuffle. nextSpawnTime 은 진입 직후 잠깐 여유.
   private enterInside(): void {
     console.log('[enterInside] before: phase=', this.phase, 'cam2.visible=', this.cam2.visible);
     this.phase = 'inside';
     this.innerTime = 0;
     this.ensureInnerContent();
     this.cam2.setVisible(true);
+
+    const queue = WAVE_KIND_DISTRIBUTION.slice();
+    shuffleInPlace(queue);
+    this.waveState = {
+      spawnQueue: queue,
+      nextSpawnTime: WAVE_FIRST_DELAY,
+      hits: 0,
+      resolved: false,
+      resolvedAt: 0,
+      shieldCharges: WAVE_SHIELD_CHARGES,
+      shieldActiveUntil: 0,
+    };
+    this.mutationText?.setText('');
+
     console.log('[enterInside] after: phase=', this.phase, 'cam2.visible=', this.cam2.visible,
-      'innerLayer.length=', this.innerLayer.length);
+      'innerLayer.length=', this.innerLayer.length, 'waveQueue=', queue.join(','));
   }
 
   // 게임: 세포 내부 컨텐츠 lazy 생성. 첫 진입 또는 restart 후 첫 진입에만 생성.
-  //   - dnaGfx : 중앙 회전 DNA 나선 (placeholder)
-  //   - innerHud : ESC/클릭 안내 텍스트
+  //   - dnaGfx       : 중앙 회전 DNA 나선 (10 세그먼트, hits 만큼 corrupted)
+  //   - bottomHud    : ESC 안내 텍스트
+  //   - innerHud     : 좌상단 wave 진행 상황 (hits/total, 변이율%)
+  //   - mutationText : 화면 중앙 위쪽 — wave 종결 시 변이 결과 표시
   //   생성 직후 innerLayer.add 로 reparent → cam2 가 그리고 cam1 은 무시.
   private ensureInnerContent(): void {
-    console.log('[ensureInnerContent] dnaGfx=', this.dnaGfx);
     if (this.dnaGfx !== null) return;
     const W = this.scale.width;
     const H = this.scale.height;
 
     const dna = this.add.graphics();
-    console.log('[ensureInnerContent] dna created, parent before addToInner=',
-      (dna as { parentContainer?: unknown }).parentContainer);
     this.addToInner(dna);
-    console.log('[ensureInnerContent] dna after addToInner: parent=',
-      (dna as { parentContainer?: unknown }).parentContainer === this.innerLayer ? 'innerLayer' : 'OTHER',
-      'cameraFilter=', (dna as unknown as { cameraFilter: number }).cameraFilter);
     this.dnaGfx = dna;
 
-    const hud = this.add.text(W / 2, H - 30,
-      '[ESC] 나가기   |   클릭 = 바이러스 spawn (placeholder)',
+    const bottomHud = this.add.text(W / 2, H - 30,
+      '[ESC] 나가기   |   클릭 = 쉴드 발동',
       {
         color: '#aaaaaa',
         fontFamily: 'ui-monospace, monospace',
         fontSize: '14px',
       });
-    hud.setOrigin(0.5, 0.5);
-    this.addToInner(hud);
+    bottomHud.setOrigin(0.5, 0.5);
+    this.addToInner(bottomHud);
+
+    const innerHud = this.add.text(20, 20, '', {
+      color: '#fc8',
+      fontFamily: 'ui-monospace, monospace',
+      fontSize: '14px',
+    });
+    this.addToInner(innerHud);
+    this.innerHud = innerHud;
+
+    const mutationText = this.add.text(W / 2, H / 2 - 120, '', {
+      color: '#ffe17a',
+      fontFamily: 'ui-monospace, monospace',
+      fontSize: '22px',
+      align: 'center',
+    });
+    mutationText.setOrigin(0.5, 0.5);
+    this.addToInner(mutationText);
+    this.mutationText = mutationText;
+
     console.log('[ensureInnerContent] innerLayer.length=', this.innerLayer.length);
   }
 
-  // 게임: 세포 내부 → 혈관 뷰 복귀. ESC 트리거. inside phase 에서만 동작.
-  //   cam2 끄고 viruses 정리 → 카메라 원위치 tween → running 복귀.
+  // 게임: 세포 내부 → 혈관 뷰 복귀. ESC 또는 wave 결과 자동 트리거. inside phase 에서만.
+  //   cam2 끄고 viruses/wave 정리 → 카메라 원위치 tween → running 복귀.
   private exitInside(): void {
     if (this.phase !== 'inside') return;
     this.phase = 'zoomingOut';
     this.cam2.setVisible(false);
     this.clearViruses();
+    this.clearShieldHitEffects();
+    this.waveState = null;
+    this.mutationText?.setText('');
 
     const cam = this.cameras.main;
     const ZOOM_DURATION = 800;
@@ -477,7 +629,9 @@ export class BloodScene extends Phaser.Scene {
   }
 
   // 게임: 내부 phase 진행 (외부 sim 정지). innerTime 만 진행.
-  //   1) DNA 나선 회전 그리기  2) viruses 위치 적분 + 중앙 도달 시 제거.
+  //   1) wave spawn timer  2) DNA 나선 그리기 (hits 만큼 corrupted)
+  //   3) viruses 갱신 (hit 시 wave.hits++)  4) wave 종결 판정 / 결과 후 자동 복귀
+  //   5) inside HUD 갱신
   private updateInside(delta: number): void {
     if (!this.updateInsideLogged) {
       console.log('[updateInside] FIRST CALL — phase=', this.phase,
@@ -491,58 +645,127 @@ export class BloodScene extends Phaser.Scene {
     this.innerTime += dt;
     const t = this.innerTime;
 
-    this.drawDnaHelix(t);
+    // 1) wave 자동 spawn — innerTime 이 nextSpawnTime 도달할 때마다 1발.
+    const wave = this.waveState;
+    if (wave !== null && !wave.resolved) {
+      while (wave.spawnQueue.length > 0 && t >= wave.nextSpawnTime) {
+        const kind = wave.spawnQueue.shift()!;
+        const angle = Math.random() * Math.PI * 2;
+        this.spawnVirusAt(angle, kind);
+        wave.nextSpawnTime = t + WAVE_SPAWN_INTERVAL;
+      }
+    }
+
+    const hits = wave ? wave.hits : 0;
+    const shieldActive = this.isShieldActive();
+    this.drawDnaHelix(t, hits, shieldActive);
     this.updateViruses(dt);
+    this.updateShieldHitEffects();
+
+    // 2) wave 종결 판정 — spawn 다 됐고 + 화면에 바이러스 없음 → 결과 처리.
+    if (wave !== null && !wave.resolved && wave.spawnQueue.length === 0 && this.viruses.length === 0) {
+      this.finalizeWave();
+    }
+
+    // 3) 결과 표시 후 WAVE_RESULT_DELAY 경과 → 자동 페이즈 1 복귀.
+    if (wave !== null && wave.resolved && t - wave.resolvedAt >= WAVE_RESULT_DELAY) {
+      this.exitInside();
+    }
+
+    // 4) HUD — 진행 상황 + 쉴드 상태. wave 끝나면 결과 텍스트가 mutationText 에 따로 표시.
+    if (this.innerHud !== null) {
+      const fired = WAVE_TOTAL - (wave ? wave.spawnQueue.length : 0) - this.viruses.length;
+      const charges = wave ? wave.shieldCharges : 0;
+      const shieldStatus = shieldActive ? 'ON' : 'OFF';
+      this.innerHud.setText(
+        `wave: ${fired}/${WAVE_TOTAL} 처리   hits: ${hits}/${WAVE_TOTAL}   변이율: ${hits * 10}%\n` +
+        `쉴드: ${charges}/${WAVE_SHIELD_CHARGES} (${shieldStatus})  — 클릭으로 발동 (${WAVE_SHIELD_DURATION.toFixed(1)}s)`,
+      );
+    }
 
     this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  speed: ${this.speedMultiplier}x  [INSIDE]`);
   }
 
   // 게임: DNA 나선 placeholder. 두 strand + base pair, t 에 따라 회전.
-  private drawDnaHelix(t: number): void {
+  //   로컬 (lx, ly) 좌표를 TILT (45°) 회전 후 (cx, cy) 로 평행이동.
+  //   DNA_SEGMENTS (10) 분할 — strand 는 세그먼트당 SUBSTEPS 개의 sub-line, base pair 는 세그먼트당 1개.
+  //   hits 만큼 인덱스 0 부터 corrupted (빨강 톤) 으로 그림.
+  //   shieldActive=true 면 strand/pair 라인 두께 ↑ (쉴드 시각 펄스).
+  private drawDnaHelix(t: number, hits: number, shieldActive: boolean): void {
     if (!this.dnaGfx) return;
     const cx = this.scale.width / 2;
     const cy = this.scale.height / 2;
-    const LENGTH = 160;
+    const LENGTH = 80;
     const RADIUS = 24;
     const TURNS = 2;
-    const STEPS = 60;
+    const SUBSTEPS = 6; // 세그먼트당 strand sub-line 수 (10 × 6 = 60 라인, 기존 STEPS 와 동등)
     const SPIN = 1.5; // rad/s
+    const TILT = Math.PI / 4; // 45도
+    const cosT = Math.cos(TILT);
+    const sinT = Math.sin(TILT);
+
+    // 게임: 색 — healthy = 녹색 톤, corrupted = 빨강 톤. 쉴드는 별도 색 변경 없이 두께만.
+    const STRAND_HEALTHY = 0x88ff99;
+    const STRAND_CORRUPTED = 0xff5566;
+    const PAIR_HEALTHY = 0x336644;
+    const PAIR_CORRUPTED = 0x802233;
+    const strandWidth = shieldActive ? DNA_STRAND_WIDTH_SHIELD : DNA_STRAND_WIDTH;
+    const pairWidth = shieldActive ? DNA_PAIR_WIDTH_SHIELD : DNA_PAIR_WIDTH;
 
     this.dnaGfx.clear();
 
-    this.dnaGfx.lineStyle(2.5, 0x88ff99, 0.95);
+    // 게임: strand — 두 가닥. 세그먼트별로 색 결정 후 SUBSTEPS 만큼 sub-line.
     for (let strand = 0; strand < 2; strand++) {
       const phaseOffset = strand * Math.PI;
-      for (let i = 0; i < STEPS; i++) {
-        const u0 = i / STEPS;
-        const u1 = (i + 1) / STEPS;
-        const a0 = u0 * TURNS * Math.PI * 2 + t * SPIN + phaseOffset;
-        const a1 = u1 * TURNS * Math.PI * 2 + t * SPIN + phaseOffset;
-        const x0 = cx + Math.cos(a0) * RADIUS;
-        const y0 = cy + (u0 - 0.5) * LENGTH;
-        const x1 = cx + Math.cos(a1) * RADIUS;
-        const y1 = cy + (u1 - 0.5) * LENGTH;
-        this.dnaGfx.lineBetween(x0, y0, x1, y1);
+      for (let seg = 0; seg < DNA_SEGMENTS; seg++) {
+        const corrupted = seg < hits;
+        const color = corrupted ? STRAND_CORRUPTED : STRAND_HEALTHY;
+        const alpha = corrupted ? 1.0 : 0.95;
+        this.dnaGfx.lineStyle(strandWidth, color, alpha);
+        for (let s = 0; s < SUBSTEPS; s++) {
+          const i0 = seg * SUBSTEPS + s;
+          const i1 = i0 + 1;
+          const total = DNA_SEGMENTS * SUBSTEPS;
+          const u0 = i0 / total;
+          const u1 = i1 / total;
+          const a0 = u0 * TURNS * Math.PI * 2 + t * SPIN + phaseOffset;
+          const a1 = u1 * TURNS * Math.PI * 2 + t * SPIN + phaseOffset;
+          const lx0 = Math.cos(a0) * RADIUS;
+          const ly0 = (u0 - 0.5) * LENGTH;
+          const lx1 = Math.cos(a1) * RADIUS;
+          const ly1 = (u1 - 0.5) * LENGTH;
+          const x0 = cx + lx0 * cosT - ly0 * sinT;
+          const y0 = cy + lx0 * sinT + ly0 * cosT;
+          const x1 = cx + lx1 * cosT - ly1 * sinT;
+          const y1 = cy + lx1 * sinT + ly1 * cosT;
+          this.dnaGfx.lineBetween(x0, y0, x1, y1);
+        }
       }
     }
 
-    // 게임: base pair — 두 strand 사이 가로 짧은 선.
-    this.dnaGfx.lineStyle(1.2, 0x336644, 0.7);
-    const PAIRS = 10;
-    for (let i = 0; i < PAIRS; i++) {
-      const u = (i + 0.5) / PAIRS;
+    // 게임: base pair — 세그먼트당 1개 (총 DNA_SEGMENTS 개), 가운데 위치. 세그먼트 인덱스로 색 결정.
+    for (let seg = 0; seg < DNA_SEGMENTS; seg++) {
+      const corrupted = seg < hits;
+      const color = corrupted ? PAIR_CORRUPTED : PAIR_HEALTHY;
+      const alpha = corrupted ? 0.95 : 0.7;
+      this.dnaGfx.lineStyle(pairWidth, color, alpha);
+      const u = (seg + 0.5) / DNA_SEGMENTS;
       const a = u * TURNS * Math.PI * 2 + t * SPIN;
-      const x0 = cx + Math.cos(a) * RADIUS;
-      const x1 = cx + Math.cos(a + Math.PI) * RADIUS;
-      const y = cy + (u - 0.5) * LENGTH;
-      this.dnaGfx.lineBetween(x0, y, x1, y);
+      const lx0 = Math.cos(a) * RADIUS;
+      const lx1 = Math.cos(a + Math.PI) * RADIUS;
+      const ly = (u - 0.5) * LENGTH;
+      const x0 = cx + lx0 * cosT - ly * sinT;
+      const y0 = cy + lx0 * sinT + ly * cosT;
+      const x1 = cx + lx1 * cosT - ly * sinT;
+      const y1 = cy + lx1 * sinT + ly * cosT;
+      this.dnaGfx.lineBetween(x0, y0, x1, y1);
     }
   }
 
-  // 게임: 클릭 방향 wall 위치에서 바이러스 spawn → 중앙(DNA) 직진.
-  //   wall 위치 = host DNA 의 evaluateRadius 결과를 cam1 zoom 으로 환산해 screen 좌표화.
-  //   cam1 이 호스트 위치에 panned 되어있으므로 화면 중앙 = host 중심.
-  private spawnVirus(angle: number): void {
+  // 게임: 단일 바이러스 spawn — wall 위치 (호스트 DNA evaluateRadius) → DNA 중앙 진입.
+  //   wall → screen 좌표 환산: cam1 이 host 중심에 panned 이므로 화면 중앙 = host 중심.
+  //   pattern 별 추가 파라미터는 spawn 시 무작위 결정 (Virus 타입 주석 참조).
+  private spawnVirusAt(angle: number, kind: Virus['kind']): void {
     if (!this.hostCell) return;
     const cx = this.scale.width / 2;
     const cy = this.scale.height / 2;
@@ -551,46 +774,182 @@ export class BloodScene extends Phaser.Scene {
     const sx = cx + Math.cos(angle) * rWorld * zoom;
     const sy = cy + Math.sin(angle) * rWorld * zoom;
 
-    const SPEED = 60;
     const dx = cx - sx;
     const dy = cy - sy;
     const len = Math.hypot(dx, dy) || 1;
-    const vx = (dx / len) * SPEED;
-    const vy = (dy / len) * SPEED;
+    const baseDirX = dx / len;
+    const baseDirY = dy / len;
 
     const gfx = this.add.graphics();
-    gfx.fillStyle(0xff5577, 1);
+    // 게임: 패턴별 색 약간 다르게 — 시각 식별용.
+    const color = kind === 'straight' ? 0xff5577 : kind === 'zigzag' ? 0xffaa44 : 0x66ccff;
+    gfx.fillStyle(color, 1);
     gfx.fillCircle(0, 0, 4);
     gfx.setPosition(sx, sy);
     this.addToInner(gfx);
 
-    this.viruses.push({ x: sx, y: sy, vx, vy, gfx });
-    console.log('[spawnVirus] angle=', angle.toFixed(2), 'pos=', sx.toFixed(0), sy.toFixed(0),
-      'vel=', vx.toFixed(1), vy.toFixed(1), 'total viruses=', this.viruses.length);
+    // 게임: 모든 패턴 공통 baseline speed 랜덤 — 도달 타이밍 분산.
+    //   같은 wave 안에서도 빠른/느린 바이러스 섞여 "한꺼번에 몰리는 순간" 이 자연스럽게 생김.
+    const speed = VIRUS_SPEED_MIN + Math.random() * (VIRUS_SPEED_MAX - VIRUS_SPEED_MIN);
+
+    this.viruses.push({
+      kind,
+      bornTime: this.innerTime,
+      spawnX: sx,
+      spawnY: sy,
+      baseDirX,
+      baseDirY,
+      speed,
+      // zigzag 파라미터 (kind != zigzag 면 무시)
+      amplitude: 25 + Math.random() * 15,    // 25~40 px
+      frequency: 4 + Math.random() * 2,      // 4~6 rad/s
+      // curve 파라미터 (kind != curve 면 무시) — inwardSpeed 도 같은 랜덤으로 통일.
+      initialDist: len,
+      initialAngle: Math.atan2(sy - cy, sx - cx),
+      angularVelocity: (Math.random() < 0.5 ? 1 : -1) * (1 + Math.random()), // ±1~2 rad/s
+      inwardSpeed: speed,
+      x: sx,
+      y: sy,
+      gfx,
+    });
   }
 
-  // 게임: 바이러스 위치 적분 + DNA 도달 시 제거 (향후 데미지 처리 자리).
-  private updateViruses(dt: number): void {
+  // 게임: 바이러스 위치 갱신 — parametric (innerTime 기반). 패턴별 위치 함수.
+  //   DNA 도달 시 제거 (향후 데미지 처리 자리).
+  private updateViruses(_dt: number): void {
     const cx = this.scale.width / 2;
     const cy = this.scale.height / 2;
     const HIT_RADIUS = 16;
+    const t = this.innerTime;
+
     for (let i = this.viruses.length - 1; i >= 0; i--) {
       const v = this.viruses[i];
-      v.x += v.vx * dt;
-      v.y += v.vy * dt;
+      const tElapsed = t - v.bornTime;
+
+      if (v.kind === 'straight') {
+        const distAlong = v.speed * tElapsed;
+        v.x = v.spawnX + v.baseDirX * distAlong;
+        v.y = v.spawnY + v.baseDirY * distAlong;
+      } else if (v.kind === 'zigzag') {
+        const distAlong = v.speed * tElapsed;
+        const baseX = v.spawnX + v.baseDirX * distAlong;
+        const baseY = v.spawnY + v.baseDirY * distAlong;
+        // 게임: 진행 방향 90° CCW = 수직 방향. sin 으로 진동.
+        const perpX = -v.baseDirY;
+        const perpY = v.baseDirX;
+        const off = v.amplitude * Math.sin(tElapsed * v.frequency);
+        v.x = baseX + perpX * off;
+        v.y = baseY + perpY * off;
+      } else {
+        // 게임: curve — 중앙 기준 spiral. 거리 ↓ + 각도 ↑.
+        const dist = Math.max(0, v.initialDist - v.inwardSpeed * tElapsed);
+        const angle = v.initialAngle + v.angularVelocity * tElapsed;
+        v.x = cx + Math.cos(angle) * dist;
+        v.y = cy + Math.sin(angle) * dist;
+      }
+
       v.gfx.setPosition(v.x, v.y);
+
       const dx = cx - v.x;
       const dy = cy - v.y;
       if (dx * dx + dy * dy < HIT_RADIUS * HIT_RADIUS) {
+        const blocked = this.isShieldActive();
+        const vx = v.x;
+        const vy = v.y;
         v.gfx.destroy();
         this.viruses.splice(i, 1);
+        if (this.waveState !== null && !this.waveState.resolved) {
+          if (blocked) {
+            // 게임: 쉴드 차단 — hits 미증가 + 차단 위치에 소멸 이펙트.
+            this.spawnShieldHitEffect(vx, vy);
+          } else {
+            this.waveState.hits++;
+          }
+        }
       }
     }
+  }
+
+  // 게임: 쉴드 차단 위치에 작은 원 펄스 — 0.25s 동안 반지름 ↑ + alpha ↓.
+  //   updateShieldHitEffects 가 매 프레임 갱신/정리.
+  private spawnShieldHitEffect(x: number, y: number): void {
+    const gfx = this.add.graphics();
+    gfx.setPosition(x, y);
+    this.addToInner(gfx);
+    this.shieldHitEffects.push({ x, y, bornTime: this.innerTime, gfx });
+  }
+
+  // 게임: 쉴드 차단 이펙트 갱신 — easing 없이 선형. 만료 시 destroy + 제거.
+  private updateShieldHitEffects(): void {
+    const t = this.innerTime;
+    for (let i = this.shieldHitEffects.length - 1; i >= 0; i--) {
+      const e = this.shieldHitEffects[i];
+      const tt = (t - e.bornTime) / SHIELD_HIT_DURATION;
+      if (tt >= 1) {
+        e.gfx.destroy();
+        this.shieldHitEffects.splice(i, 1);
+        continue;
+      }
+      const r = SHIELD_HIT_RADIUS_START + (SHIELD_HIT_RADIUS_END - SHIELD_HIT_RADIUS_START) * tt;
+      const alpha = 1 - tt;
+      e.gfx.clear();
+      e.gfx.lineStyle(2, SHIELD_HIT_COLOR, alpha);
+      e.gfx.strokeCircle(0, 0, r);
+    }
+  }
+
+  // 게임: 이펙트 일괄 정리 — exitInside / restart 시.
+  private clearShieldHitEffects(): void {
+    for (const e of this.shieldHitEffects) e.gfx.destroy();
+    this.shieldHitEffects = [];
   }
 
   private clearViruses(): void {
     for (const v of this.viruses) v.gfx.destroy();
     this.viruses = [];
+  }
+
+  // 게임: 쉴드 활성 여부 — innerTime 이 만료 시각 미만이면 ON.
+  //   wave 없거나 결과 표시 중이면 항상 OFF.
+  private isShieldActive(): boolean {
+    const w = this.waveState;
+    if (w === null || w.resolved) return false;
+    return this.innerTime < w.shieldActiveUntil;
+  }
+
+  // 게임: 쉴드 발동 시도 — wave 진행 중 + charges 남음 + 이미 활성 아닐 때만.
+  //   활성 중 클릭은 무시 (남은 charges 보호). 발동 시 charges-- + 만료 시각 갱신.
+  private tryActivateShield(): void {
+    const w = this.waveState;
+    if (w === null || w.resolved) return;
+    if (w.shieldCharges <= 0) return;
+    if (this.isShieldActive()) return;
+    w.shieldCharges--;
+    w.shieldActiveUntil = this.innerTime + WAVE_SHIELD_DURATION;
+  }
+
+  // 게임: wave 종결 처리 — pickMutation 으로 종류 결정 후 hostCell 에 적용.
+  //   결과 텍스트는 mutationText 에 표시, WAVE_RESULT_DELAY 후 updateInside 가 자동 exitInside 호출.
+  //   hits=0 (변이 없음) 도 동일하게 처리 — 정상 메시지만 띄우고 자동 복귀.
+  private finalizeWave(): void {
+    const wave = this.waveState;
+    if (wave === null || wave.resolved) return;
+    wave.resolved = true;
+    wave.resolvedAt = this.innerTime;
+
+    const kind = pickMutation(wave.hits);
+    if (kind === null) {
+      this.mutationText?.setText(`정상 (변이 없음)\nhits 0/${WAVE_TOTAL}`);
+      console.log('[finalizeWave] hits=0 → no mutation');
+      return;
+    }
+    if (this.hostCell !== null && !this.hostCell.isDead()) {
+      const newDna = applyMutation(this.hostCell.dna, kind);
+      this.hostCell.setDna(newDna);
+    }
+    const info = MUTATION_INFO[kind];
+    this.mutationText?.setText(`변이 ${info.num} 발생\n${info.label}\nhits ${wave.hits}/${WAVE_TOTAL}`);
+    console.log('[finalizeWave] hits=', wave.hits, 'kind=', kind);
   }
 
   // 게임: 디버그용 호중구 스폰 — 무작위 위치, 100% hp.
@@ -760,15 +1119,20 @@ export class BloodScene extends Phaser.Scene {
   // 게임: 커맨더 진화 — 사망 후 COMMANDER_EVOLUTION_DELAY 초 경과 시
   //   살아있는 일반 세균 1마리를 무작위 선택해 커맨더로 변환.
   //   변환 = 기존 세균 isAbsorbed=true 로 정리 + 같은 위치에 새 BACTERIA_COMMANDER 생성.
-  //   후보가 없으면 record 는 이미 소비됐으므로 다음 사망 시까지 진화 없음.
+  //   후보가 없으면 record 를 requeue — [B] 로 세균 스폰 시 다음 프레임 자동 재시도.
   private evolveCommanders(t: number): void {
     const expired = this.teamSystem.consumeExpiredDeathRecords(t, COMMANDER_EVOLUTION_DELAY);
     if (expired.length === 0) return;
-    for (const _deathTime of expired) {
+    for (const deathTime of expired) {
       const candidates = this.bacteriaBehavior
         .getAlive()
         .filter((b) => !b.isCommander());
-      if (candidates.length === 0) continue;
+      if (candidates.length === 0) {
+        // 게임: 세균 전멸 상태 — record 를 다시 큐에 넣어 다음 프레임 재시도.
+        //        세균 스폰될 때까지 매 프레임 requeue/consume 반복 (비용 무시 가능).
+        this.teamSystem.requeueDeathRecord(deathTime);
+        continue;
+      }
       const target = candidates[Math.floor(Math.random() * candidates.length)];
       const x = target.x;
       const y = target.y;
@@ -780,11 +1144,11 @@ export class BloodScene extends Phaser.Scene {
   // 게임: NEUTROPHIL 호중구 중 level 임계 도달한 개체를 NK/BCELL/SUPER 무작위 변환.
   //   - 변환 = 호중구 isAbsorbed=true (정리됨) + 같은 자리에 새 종 spawn
   //   - 1/3 씩 균등 분포 (NK / BCELL / SUPER)
-  //   - 슈퍼/NK/BCELL/TCELL 등은 진화 X (`dna === NEUTROPHIL` 체크)
+  //   - 슈퍼/NK/BCELL/TCELL 등은 진화 X (`dnaKind === 'NEUTROPHIL'` 체크)
   private evolveNeutrophils(): void {
     const candidates = this.whiteCellBehavior
       .getAlive()
-      .filter((c) => c.dna === NEUTROPHIL && c.level >= NEUTROPHIL_EVOLUTION_LEVEL);
+      .filter((c) => c.dnaKind === 'NEUTROPHIL' && c.level >= NEUTROPHIL_EVOLUTION_LEVEL);
     if (candidates.length === 0) return;
     for (const cell of candidates) {
       const x = cell.x;
@@ -828,5 +1192,15 @@ export class BloodScene extends Phaser.Scene {
       this.whiteCellBehavior.add(cell);
       result = this.macrophageSystem.consumeScoreForProduction();
     }
+  }
+}
+
+// 게임: Fisher-Yates shuffle. wave 패턴 큐 순서 무작위화 (in-place).
+function shuffleInPlace<T>(arr: T[]): void {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
   }
 }

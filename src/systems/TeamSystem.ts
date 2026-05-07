@@ -9,7 +9,6 @@
 import type { Bacteria } from '../entities/Bacteria';
 import type { WhiteCell } from '../entities/WhiteCell';
 import type { DNA } from '../domain/dna';
-import { BCELL, TCELL } from '../domain/dna';
 
 // 게임: 멤버가 지휘범위 × 이 비율 이상 벗어나면 자동 탈퇴.
 //        영입 거리(commandRange) 보다 살짝 넓게 두어 경계에서 깜빡이는 영입/탈퇴 방지.
@@ -24,8 +23,8 @@ const ATTACK_HP_THRESHOLD = 1.5;
 //   2순위 TCELL — 호중구 진화 매개라 차단 시 호중구 보강 끊김
 //   3순위 그 외 (NEUTROPHIL/SUPER/NK) — 직접 전투 대상
 function priorityOf(dna: DNA): number {
-  if (dna === BCELL) return 1;
-  if (dna === TCELL) return 2;
+  if (dna.kind === 'BCELL') return 1;
+  if (dna.kind === 'TCELL') return 2;
   return 3;
 }
 
@@ -229,6 +228,7 @@ export class TeamSystem {
   // 게임: durationSec 이상 경과한 커맨더 사망 record 를 반환하고 내부에서 제거.
   //        BloodScene 이 매 프레임 호출 → 일반 세균 1마리 진화 트리거.
   //        반환된 만큼 진화 처리해야 함 (호출자 책임).
+  //        진화 실패 시 (후보 없음 등) requeueDeathRecord 로 다시 등록 가능.
   consumeExpiredDeathRecords(t: number, durationSec: number): number[] {
     const expired: number[] = [];
     const remain: number[] = [];
@@ -238,5 +238,12 @@ export class TeamSystem {
     }
     this.commanderDeathTimes = remain;
     return expired;
+  }
+
+  // 게임: consumeExpiredDeathRecords 로 받은 record 가 진화에 못 쓰였을 때 재등록.
+  //   대표 케이스: 커맨더 사망 후 모든 세균이 전멸 → 후보 0 → 진화 무산.
+  //   사용자가 [B] 키로 세균 스폰 시 다음 진화 검사에서 다시 expired 처리되어 자동 진화됨.
+  requeueDeathRecord(deathTime: number): void {
+    this.commanderDeathTimes.push(deathTime);
   }
 }
