@@ -22,16 +22,13 @@ import { MacrophageSystem } from '../systems/MacrophageSystem';
 import { AntibodySystem } from '../systems/AntibodySystem';
 import { AntibodyRenderer } from '../render/AntibodyRenderer';
 import { applySeparation } from '../domain/separation';
-import { evaluateRadius } from '../domain/shapeFunction';
 import { pickMutation, applyMutation, type MutationKind } from '../domain/mutations';
+import { STAGE_1, type StageConfig, type StageResult } from '../stages/types';
+import { CUTSCENE_INTRO } from '../cutscenes/intro-script';
+import type { CutsceneStep } from '../cutscenes/types';
 
-// 게임: 초기 호중구 수.
-const NEUTROPHIL_COUNT = 10;
-
-// 게임: 초기 세균 수. 시스템 구현 기획서 §2.4 — 사회성 형질 도입 시 즉시 관찰 가능.
-const BACTERIA_COUNT = 3;
-
-// 게임: 초기 커맨더 수 (M5.1). 분열 안 하므로 사망 시까지 유지.
+// 게임: 초기 spawn 수는 Session 20 부터 StageConfig 로 이전 (src/stages/types.ts).
+//   COMMANDER_COUNT 는 placement queue 의 의미로만 (사용자가 클릭으로 1마리 배치) — 상수 유지.
 const COMMANDER_COUNT = 1;
 
 // 게임: 초기 대식세포 수 (M5.4a).
@@ -55,7 +52,13 @@ const NUTRIENT_COUNT = 40;
 // 게임: 영양분 생성 영역 — 화면 사각 테두리에서 안쪽으로 이만큼 들여서 배치.
 //       세균이 구석에 쏠려 영양분에 닿지 못하는 케이스 방지.
 //       100 → 160 (Session 16) — 세균 baseRadius(18) + wobble + 분리력 여유.
-const NUTRIENT_MARGIN = 100;
+// 게임: 영양분 분포 마진 (px) — 화면 가장자리에서 안쪽으로 이만큼 마진. (Session 20: 130→40 좁은 화면 대응)
+//   너무 작으면 세균이 구석에 박힐 위험. 40 정도가 안전 (세균 base 9 + 분리력 padding 고려).
+const NUTRIENT_MARGIN = 40;
+
+// 게임: 호중구/세균 spawn 마진 (px) — 화면 가장자리에서 안쪽으로 이만큼 안. (Session 20: 100→30)
+//   개체 base 가 절반으로 줄어 더 가장자리 가까이 spawn 가능. 영양분 마진 (40) 보다 작아도 OK.
+const SPAWN_MARGIN = 30;
 const NUTRIENT_RESPAWN_DELAY = 5;
 
 // 게임: 충격파 자원/파동 파라미터.
@@ -190,6 +193,97 @@ const DNA_PAIR_WIDTH_SHIELD = 3.0;
 const VIRUS_SPEED_MIN = 40;
 const VIRUS_SPEED_MAX = 80;
 
+// 게임: 바이러스 자동 제거 조건 — 풍선 밖으로 나가거나 너무 오래 살면 hit 미증가로 소멸.
+//   zigzag 진동 폭 (±25~40px) 이 HIT_RADIUS(16) 보다 커서 정중앙 빗나갈 수 있음 — 그러면 영원히 진행.
+//   풍선 밖 = "안 맞히고 지나감" 처리. 수명 만료는 안전망 (curve 가 dist 0 머무는 케이스 등).
+const VIRUS_OUTOFBOUND_MARGIN = 20;
+const VIRUS_MAX_LIFETIME = 8;
+
+// 게임: PhaseBubble — 호중구 호스트당 1개. 화면 우상단부터 세로 정렬, host 와 꼬리 line 연결.
+//   외부 sim 과 동시 진행 — bubble.localTime 은 외부 gameTime 과 dt 공유 (speedMultiplier 도).
+//   클릭 hit test 는 풍선 사각 영역 (centerX±size/2, centerY±size/2).
+//   host 사망 시 closeBubble 즉시 호출 — 변이 적용 X.
+type PhaseBubble = {
+  host: import('../entities/WhiteCell').WhiteCell;
+  localTime: number;                      // 풍선 안 시간 (초). spawn 시 0.
+  spawnedAt: number;                      // gameTime 기준 등장 시각 (페이드 인 용).
+  resolvedAt: number | null;              // wave 종료 후 closeBubble 까지 카운트다운 기준.
+  centerX: number;                        // 화면 풍선 중심 X
+  centerY: number;                        // 화면 풍선 중심 Y
+  size: number;                           // 풍선 한 변 (정사각형, 둥근 모서리)
+  wave: WaveState;
+  viruses: Virus[];
+  shieldHitEffects: ShieldHitEffect[];
+  frameGfx: Phaser.GameObjects.Graphics;  // 둥근 사각형 + 꼬리 line
+  contentsGfx: Phaser.GameObjects.Graphics; // DNA 나선
+  virusLayer: Phaser.GameObjects.Container; // 바이러스/쉴드 이펙트 부모 (풍선 중심 origin)
+  hudText: Phaser.GameObjects.Text;
+  resultText: Phaser.GameObjects.Text;
+  closed: boolean;                        // 정리 중 플래그 (중복 close 방지) — destroy 후 true
+  closing: boolean;                       // 페이드 아웃 진행 중. wave/클릭 갱신 스킵.
+  closeStartedAt: number;                 // closing=true 가 된 gameTime 시각.
+};
+
+// 게임: 풍선 크기 + 위치 + 외형 상수.
+//   BUBBLE_SIZE      — 한 변 (px). 화면 작아도 잘 보이도록 240 고정.
+//   BUBBLE_MARGIN_*  — 화면 가장자리에서 풍선 중심까지 여백.
+//   BUBBLE_SPACING   — 풍선 N개 세로 정렬 시 중심간 간격.
+//   BUBBLE_MAX       — 동시 최대 풍선 수 (Stage A 는 1, Stage C 에서 3 로).
+const BUBBLE_SIZE = 240;
+const BUBBLE_MARGIN_RIGHT = 30;
+const BUBBLE_MARGIN_TOP = 30;
+const BUBBLE_SPACING = 20;
+const BUBBLE_MAX = 3;
+// 게임: 풍선 외형 — 머그캵 둥근 사각형 + 꼬리.
+const BUBBLE_CORNER_RADIUS = 24;
+const BUBBLE_BG_COLOR = 0x0a0a14;
+const BUBBLE_BG_ALPHA = 0.85;
+const BUBBLE_BORDER_COLOR = 0x88ccff;
+const BUBBLE_BORDER_WIDTH = 2;
+// 게임: 꼬리 — 풍선 가장자리 → host 까지 직선. Stage B 에서 곡선 폴리싱.
+const BUBBLE_TAIL_COLOR = 0x88ccff;
+const BUBBLE_TAIL_WIDTH = 1.5;
+const BUBBLE_TAIL_ALPHA = 0.6;
+// 게임: 풍선 안 HIT_RADIUS (DNA 중앙 도달 판정). 기존 화면 좌표계와 동일하지만 풍선 좌표계 기준.
+const VIRUS_HIT_RADIUS = 16;
+// 게임: 풍선 페이드 인/아웃 시간 (초). 갑작스러운 팝업 제거 + 닫힘 시 부드러운 사라짐.
+//   spawnedAt 부터 FADE_DURATION 까지 alpha 0→1. closing 후 FADE_DURATION 까지 alpha 1→0 → destroy.
+const BUBBLE_FADE_DURATION = 0.3;
+// 게임: 풍선 그래픽 depth — 다른 모든 게임 객체 (default depth 0) 위로 그려지게.
+//   같은 depth 안에서는 spawn 순서로 정렬 — 나중 풍선이 위로.
+const BUBBLE_DEPTH = 1000;
+
+// 게임: hyperactive 변이 폭발 반경 (px). pendingHyperactiveExplosion=true 인 호중구 위치 기준.
+//   반경 내 모든 살아있는 LivingCell (호중구 + 세균) → isAbsorbed=true 즉사. 본인은 이미 isAbsorbed.
+const HYPERACTIVE_EXPLOSION_RADIUS = 200;
+
+// 게임: paralysis 외부 전파 반경 (px) + 부여 시간 (초).
+//   변이 호중구 cycle active 시 인접 paralyzed 정상 호중구 (mutation=null) 에 paralyzedUntil 갱신.
+//   1단계 전파만 — 전파된 호중구는 자기 cycle 없으므로 추가 전파 X.
+const PARALYSIS_PROPAGATION_RADIUS = 60;
+const PARALYSIS_PROPAGATION_DURATION = 0.5;
+
+// 게임: 컷신 단어별 타이핑 속도 (초/단어). 한 라인 끝나면 라인 간 pause 추가.
+//   너무 빠르면 못 따라 읽음 + 너무 느리면 답답. 0.12 = 자연 속도.
+const CUTSCENE_WORD_INTERVAL = 0.12;
+// 게임: 컷신 라인 사이 자동 pause (초). 한 라인 끝 → 다음 라인 시작까지.
+const CUTSCENE_LINE_PAUSE = 0.4;
+// 게임: 컷신 ACTION step placeholder 시간 (초). Stage A 는 모든 action 이 3s 자동 진행.
+//   Stage B 에서 kind 별 실제 시간/조건으로 교체.
+const CUTSCENE_ACTION_PLACEHOLDER_DURATION = 3;
+
+// 게임: 페이즈 2 hit 성공 확률 (Session 19).
+//   바이러스가 DNA 중심 도달했을 때 hit++ 적용될 확률. 1.0 = 적중 = 무조건 hit.
+//   관전 모드 (기본): 0.4 — 자체 면역으로 60% 자동 차단. 쉴드 없어도 변이율 조절.
+//   개입 모드: 1.0 — 사용자가 쉴드로 막아야. 쉴드는 추가 보장.
+const HIT_PROB_INTERACTIVE = 1.0;
+const HIT_PROB_OBSERVE = 0.4;
+
+// 게임: 대식세포 수동 조작 유예 시간 (초, gameTime 기준).
+//   cursor 키 (← →) 누름 시 manualUntil = gameTime + 이 값. 키 떼도 만료 전엔 마지막 방향 유지.
+//   만료 후 자동 모드 (nearest 시체 추적) 복귀. 빨리감기 시 게임 시간 기준이라 자동 비례 단축.
+const MACROPHAGE_MANUAL_TIMEOUT = 0.5;
+
 export class BloodScene extends Phaser.Scene {
   private cellRenderer!: CellRenderer;
   private shockwaveRenderer!: ShockwaveRenderer;
@@ -206,6 +300,8 @@ export class BloodScene extends Phaser.Scene {
   private hudText!: Phaser.GameObjects.Text;
   private fpsText!: Phaser.GameObjects.Text;
   private placementText!: Phaser.GameObjects.Text;
+  // 게임: 스테이지 HUD (Session 20) — 화면 상단 중앙 카운트다운 + 세균 진행.
+  private stageHudText!: Phaser.GameObjects.Text;
   private paused = false;
   // 게임: 가상 시간 + 빨리감기. Phaser 의 this.time.now 대신 사용.
   //        speedMultiplier 1=정상, 2=2배, 4=4배. update 에서 dt 에 곱.
@@ -213,36 +309,63 @@ export class BloodScene extends Phaser.Scene {
   private speedMultiplier = 1;
 
   // 게임: 게임 단계.
-  //   placing    — 주요 캐릭 (T세포/세균커맨더/B세포) 마우스 배치 중. 시뮬레이션 정지.
-  //   running    — 정상 혈관 뷰 시뮬레이션.
-  //   zoomingIn  — [Z] 후 호중구로 카메라 줌인 중. 입력/시뮬레이션 정지.
-  //   inside     — 세포 내부 phase. 외부 시뮬레이션 정지, 내부 시뮬레이션만 진행.
-  //   zoomingOut — 내부에서 ESC 후 카메라 원위치 중. 입력/시뮬레이션 정지.
-  private phase: 'placing' | 'running' | 'zoomingIn' | 'inside' | 'zoomingOut' = 'placing';
+  //   cutscene — 인트로 컷신 진행 중 (Session 21). 외부 sim 정지, 텍스트 박스 + 클릭으로 진행.
+  //   placing  — 주요 캐릭 (T세포/세균커맨더/B세포) 마우스 배치 중. 시뮬레이션 정지.
+  //   running  — 정상 혈관 뷰 시뮬레이션. 페이즈 2 (PhaseBubble) 는 풍선 레이어로 동시 진행.
+  private phase: 'cutscene' | 'placing' | 'running' = 'cutscene';
 
-  // 게임: 세포 내부 phase 관련 상태.
-  //   outerLayer  — 모든 혈관 뷰 GameObject 가 들어가는 레이어. cam2 가 ignore.
-  //   innerLayer  — 세포 내부 GameObject (DNA 나선/바이러스/내부 HUD). cam1 이 ignore.
-  //   cam2        — zoom=1, scroll(0,0) 보조 카메라. inside 진입 시 visible=true.
-  //   hostCell    — 줌인 대상 호중구. inside 진행 중 reference 보존, 복귀 시 null.
-  //   innerTime   — 내부 가상 시간 (초). 매 inside 진입 시 0 으로 리셋 (단순화).
-  //   dnaGfx      — 중앙 DNA 나선 placeholder. 첫 진입 시 lazy 생성, 이후 재사용.
-  //   viruses     — wave 로 spawn 된 바이러스들 (직진/지그재그/커브).
-  //   waveState   — 진행 중인 wave (spawn 큐, hit 카운트, 결과 처리). null = wave 없음.
-  //   innerHud / mutationText — 페이즈 2 전용 HUD (hits/rate, 변이 결과 텍스트).
-  private outerLayer!: Phaser.GameObjects.Layer;
-  private innerLayer!: Phaser.GameObjects.Layer;
-  private cam2!: Phaser.Cameras.Scene2D.Camera;
-  private hostCell: import('../entities/WhiteCell').WhiteCell | null = null;
-  private innerTime = 0;
-  private dnaGfx: Phaser.GameObjects.Graphics | null = null;
-  private viruses: Virus[] = [];
-  private shieldHitEffects: ShieldHitEffect[] = [];
-  private waveState: WaveState | null = null;
-  private innerHud: Phaser.GameObjects.Text | null = null;
-  private mutationText: Phaser.GameObjects.Text | null = null;
-  // 진단: updateInside 첫 호출 1회만 로그 (매 프레임 floods 방지).
-  private updateInsideLogged = false;
+  // 게임: 컷신 상태 (Session 21). create() 에서 CUTSCENE_INTRO 로 초기화.
+  //   steps        — 시퀀스 배열 (narration/action/end).
+  //   stepIndex    — 현재 step.
+  //   lineIndex    — narration 내 현재 라인.
+  //   wordIndex    — 현재 라인의 표시된 단어 수.
+  //   wordTimer    — 다음 단어까지 남은 시간 (초).
+  //   linePause    — 라인 사이 pause 남은 시간 (모두 표시 후 다음 라인 전).
+  //   awaitingClick — 모든 라인 표시 완료 후 클릭 대기.
+  //   actionTimer  — ACTION step 진행 시간 (초).
+  //   actionStarted — ACTION 한 번만 spawn 처리 (placeholder 는 timer 만).
+  //   uiBg / uiText / uiHint — 텍스트 박스 그래픽 객체 (lazy 생성).
+  private cutsceneSteps: CutsceneStep[] = CUTSCENE_INTRO;
+  private cutsceneStepIndex = 0;
+  private cutsceneLineIndex = 0;
+  private cutsceneWordIndex = 0;
+  private cutsceneWordTimer = 0;
+  private cutsceneLinePause = 0;
+  private cutsceneAwaitingClick = false;
+  private cutsceneActionTimer = 0;
+  private cutsceneUiBg: Phaser.GameObjects.Graphics | null = null;
+  private cutsceneUiText: Phaser.GameObjects.Text | null = null;
+  private cutsceneUiHint: Phaser.GameObjects.Text | null = null;
+  // 게임: 컷신 ACTION 중 sim 활성 여부 (Session 21 Stage B). spawnBacteria/spawnNeutrophils 만 true.
+  private cutsceneSimActive = false;
+  // 게임: spawnNutrients ACTION 의 sub-phase ('spawning' / 'pause' / 'sparkling').
+  private cutsceneNutPhase = '';
+  private cutsceneNutSpawned = 0;
+  private cutsceneNutPositions: { x: number; y: number }[] = [];
+  private cutsceneSparkleGfx: Phaser.GameObjects.Graphics | null = null;
+  // 게임: 스테이지 시작 시각 (gameTime 기준, Session 21 Stage B). running 진입 시점에 기록.
+  //   cutscene 동안 gameTime 진행되므로 stage HUD/wave/판정 비교 시 (gameTime - stageStartTime).
+  private stageStartTime = 0;
+
+  // 게임: 활성 풍선 (페이즈 2) 풀. Session 18 — cam2 줌인 → host 별 풍선 레이어로 교체.
+  //   외부 sim 정지 X. 매 프레임 updateBubbles 가 각 풍선의 wave/바이러스/쉴드 진행.
+  //   최대 3개 동시 (BUBBLE_MAX). infected 트리거 시 풀 가득 차 있으면 무시.
+  private bubbles: PhaseBubble[] = [];
+  // 게임: 페이즈 2 인터렉션 모드 (Session 19). false=관전 (기본), true=개입.
+  //   관전: 풍선 클릭 무시 + hit 확률 0.4. 개입: 풍선 클릭=쉴드 + hit 확률 1.0.
+  //   [I] 키 토글. 게임 중 어디서나 전환 가능, 진행 중인 wave 에도 즉시 반영.
+  private interactive = false;
+  // 게임: cursor 키 — 대식세포 수동 조작 (Session 19). create 에서 셋업.
+  private cursors: Phaser.Types.Input.Keyboard.CursorKeys | null = null;
+  // 게임: 스테이지 시스템 (Session 20).
+  //   currentStage    — 현재 활성 스테이지 config (스폰/판정 기준).
+  //   stageState      — running 중 / 결과 표시 중 / 종료. 결과 후 sim 정지.
+  //   nextWaveIndex   — bacteriaWaves 의 다음 처리할 인덱스. 매 프레임 atSec 도달 검사.
+  //   stageResult     — 평가 결과 (결과 모달 표시용). null = 진행 중.
+  //   stageResultText — 결과 모달 텍스트 객체 (생성 시 lazy).
+  private currentStage: StageConfig = STAGE_1;
+  private stageState: 'running' | 'resolved' = 'running';
+  private nextWaveIndex = 0;
   private debugHud!: Phaser.GameObjects.Text;
   // 게임: 배치 큐. 순서대로 클릭으로 배치. 비면 phase='running'.
   private placementQueue: { dna: DNA; label: string }[] = [];
@@ -261,38 +384,17 @@ export class BloodScene extends Phaser.Scene {
     this.gameTime = 0;
     this.speedMultiplier = 1;
     this.paused = false;
-    // 게임: 세포 내부 phase 상태도 매 create() 마다 초기화. restart 시 stale ref 회피.
-    this.hostCell = null;
-    this.innerTime = 0;
-    this.dnaGfx = null;
-    this.viruses = [];
-    this.shieldHitEffects = [];
-    this.waveState = null;
-    this.innerHud = null;
-    this.mutationText = null;
-    this.updateInsideLogged = false;
+    // 게임: 풍선 풀 초기화. 매 create() 마다 비움 (restart 시 stale ref 회피).
+    //   create 시점엔 graphics 객체가 이미 sceneRestart 로 destroy 됐으므로 ref 만 정리.
+    this.bubbles = [];
+    // 게임: 모드 초기화. restart 시에도 관전 디폴트 유지 (사용자가 다시 [I] 로 켜야).
+    this.interactive = false;
+    // 게임: cursor 키 (← →) — 대식세포 수동 조작 (Session 19). create 한 번만 — restart 시 재생성됨.
+    if (this.input.keyboard) {
+      this.cursors = this.input.keyboard.createCursorKeys();
+    }
     const W = this.scale.width;
     const H = this.scale.height;
-
-    // 게임: outer/inner Layer 분리 + 보조 카메라 cam2.
-    //   ADDED_TO_SCENE 리스너로 이후 생성되는 모든 GameObject 가 outerLayer 로 자동 라우팅.
-    //   inner 컨텐츠는 명시적으로 innerLayer.add(...) 로 reparent 해야 함.
-    //   cam1 (default) ignores innerLayer → outer 에서 inner 안 보임.
-    //   cam2 ignores outerLayer + zoom=1 + visible=false → inside 진입 시만 켜짐.
-    this.outerLayer = this.add.layer();
-    this.innerLayer = this.add.layer();
-    // restart 시 listener 중복 방지.
-    this.events.off(Phaser.Scenes.Events.ADDED_TO_SCENE, this.routeAddedToOuter, this);
-    this.events.on(Phaser.Scenes.Events.ADDED_TO_SCENE, this.routeAddedToOuter, this);
-    this.cam2 = this.cameras.add(0, 0, W, H);
-    this.cam2.setZoom(1);
-    this.cam2.setScroll(0, 0);
-    this.cam2.setVisible(false);
-    this.cameras.main.ignore(this.innerLayer);
-    this.cam2.ignore(this.outerLayer);
-    // 진단: 카메라 id 확인. cameraFilter 비트마스크 검증용.
-    console.log('[setup] cam1.id =', this.cameras.main.id, ' cam2.id =', this.cam2.id);
-    console.log('[setup] cam1.visible =', this.cameras.main.visible, ' cam2.visible =', this.cam2.visible);
 
     this.cellRenderer = new GraphicsCellRenderer(this);
     this.shockwaveRenderer = new ShockwaveRenderer(this);
@@ -315,32 +417,15 @@ export class BloodScene extends Phaser.Scene {
     this.teamSystem = new TeamSystem();
     this.macrophageSystem = new MacrophageSystem();
 
-    // 게임: 호중구 무작위 배치. M3.3 검수용으로 hp 60~100% 랜덤 → 시작부터 다양한 크기.
-    for (let i = 0; i < NEUTROPHIL_COUNT; i++) {
-      const x = 100 + Math.random() * (W - 200);
-      const y = 100 + Math.random() * (H - 200);
-      const phase = Math.random() * Math.PI * 2;
-      const hp = NEUTROPHIL.combat.maxHp * (0.6 + Math.random() * 0.4);
-      this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, phase, hp));
-    }
+    // 게임: 스테이지 상태 초기화 (Session 20). restart 시에도 첫 스테이지부터.
+    this.currentStage = STAGE_1;
+    this.stageState = 'running';
+    this.nextWaveIndex = 0;
+    this.stageStartTime = 0;
+    this.bacteriaBehavior.resetStageCounters();
 
-    // 게임: 세균 무작위 배치. 동일하게 hp 60~100% 랜덤.
-    for (let i = 0; i < BACTERIA_COUNT; i++) {
-      const x = 100 + Math.random() * (W - 200);
-      const y = 100 + Math.random() * (H - 200);
-      const phase = Math.random() * Math.PI * 2;
-      const hp = BACTERIA_A.combat.maxHp * (0.6 + Math.random() * 0.4);
-      this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase, hp);
-    }
-
-    // 게임: 대식세포 배치 (M5.4a). 화면 바닥에서 좌우만 이동.
-    //   납작 비율 0.55 반영해 시각 외곽이 화면 바닥에 닿도록 (Macrophage.ts 의 setScale 과 동기).
-    const floorY = H - MACROPHAGE.shape.base * 0.55;
-    for (let i = 0; i < MACROPHAGE_COUNT; i++) {
-      const x = 100 + Math.random() * (W - 200);
-      const phase = Math.random() * Math.PI * 2;
-      this.macrophageSystem.add(new Macrophage(MACROPHAGE, this.cellRenderer, x, floorY, phase));
-    }
+    // 게임: 스테이지 시작 spawn (호중구/세균/대식세포) 은 컷신 종료 시점 (endCutscene) 으로 미룸.
+    //   컷신 도중 호중구가 보이면 안 됨 — populateStageStart() 가 endCutscene 에서 호출.
 
     // 게임: 주요 캐릭 (T세포 / 세균 커맨더 / B세포) placement queue 만 등록.
     //        beginNextPlacement 호출은 placementText 생성 후로 미룸 (setText undefined 회피).
@@ -362,19 +447,24 @@ export class BloodScene extends Phaser.Scene {
       }
     });
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (this.phase === 'cutscene') {
+        this.handleCutsceneClick();
+        return;
+      }
       if (this.phase === 'placing') {
         this.confirmPlacement(pointer.x, pointer.y);
         return;
       }
-      // 게임: 페이즈 2 (inside) — 클릭으로 쉴드 발동.
-      //        DNA 자체에 ~0.3s 동안 쉴드 활성. 그 시간 안에 DNA 중심에 도달한 바이러스는
-      //        hits 미증가 + 소멸. 한 번 발동으로 같은 타이밍의 다발 바이러스 다 막힘.
-      if (this.phase === 'inside') {
-        this.tryActivateShield();
-        return;
-      }
-      // 게임: 줌 전환 중에는 클릭 무시 (충격파 발사 차단).
       if (this.phase !== 'running') return;
+      // 게임: 풍선 영역 클릭 = (개입 모드) 그 풍선 쉴드 발동. (관전 모드) 무시 + 충격파도 X.
+      //   외부 클릭 = 충격파 그대로. 여러 풍선 겹치면 위 풍선 (배열 뒤쪽) 우선.
+      for (let i = this.bubbles.length - 1; i >= 0; i--) {
+        const b = this.bubbles[i];
+        if (this.isPointInBubble(pointer.x, pointer.y, b)) {
+          if (this.interactive) this.tryActivateBubbleShield(b);
+          return;
+        }
+      }
       this.shockwaveSystem.trySpawn(pointer.x, pointer.y, this.gameTime);
     });
 
@@ -393,7 +483,7 @@ export class BloodScene extends Phaser.Scene {
       fontFamily: 'ui-monospace, monospace',
       fontSize: '14px',
     });
-    this.add.text(20, 80, '[N]+호중구10  [B]+세균10  [P]일시정지  [R]리셋  [1/2/3] 1x/2x/4x', {
+    this.add.text(20, 80, '[N]+호중구10  [B]+세균10  [P]일시정지  [R]리셋  [1/2/3] 1x/2x/4x  [←→]대식세포  [I]개입/관전  [M]무작위변이  [Shift+1~6]변이1~6  [Z]풍선', {
       color: '#888',
       fontFamily: 'ui-monospace, monospace',
       fontSize: '12px',
@@ -404,6 +494,17 @@ export class BloodScene extends Phaser.Scene {
       fontFamily: 'ui-monospace, monospace',
       fontSize: '12px',
     });
+    // 게임: 스테이지 카운트다운 HUD — 화면 상단 중앙. 시간 mm:ss + 세균 진행 표시.
+    this.stageHudText = this.add.text(W / 2, 24, '', {
+      color: '#ffffff',
+      fontFamily: 'ui-monospace, monospace',
+      fontSize: '20px',
+      fontStyle: 'bold',
+      align: 'center',
+      stroke: '#000000',
+      strokeThickness: 3,
+    });
+    this.stageHudText.setOrigin(0.5, 0.5);
     // 게임: 화면 중앙 안내 텍스트 — placement 중에만 표시.
     this.placementText = this.add.text(this.scale.width / 2, this.scale.height / 2 - 60, '', {
       color: '#fff',
@@ -413,8 +514,11 @@ export class BloodScene extends Phaser.Scene {
     });
     this.placementText.setOrigin(0.5, 0.5);
 
-    // 게임: 텍스트 생성 후 첫 placement 시작 (안내 + 미리보기 핸들 표시).
-    this.beginNextPlacement(W, H);
+    // 게임: 컷신 시작 (Session 21). create 끝 — UI 텍스트 등 모두 만들어진 후.
+    //   컷신 끝나면 자동으로 beginNextPlacement 호출 (advanceCutsceneStep 의 end 처리).
+    //   영양분 시스템은 컷신 동안 비활성 — spawnNutrients 액션이 5개만 명시 spawn. 컷신 종료 시 enableAll.
+    this.nutrientSystem.disableAll();
+    this.beginCutscene();
 
     // Phaser: 디버그 키. scene.restart() 시 자동 정리되고 create 에서 재등록.
     const kb = this.input.keyboard;
@@ -423,51 +527,449 @@ export class BloodScene extends Phaser.Scene {
       kb.on('keydown-B', () => this.spawnBacteria(10));
       kb.on('keydown-P', () => { this.paused = !this.paused; });
       kb.on('keydown-R', () => this.scene.restart());
-      kb.on('keydown-ONE',   () => { this.speedMultiplier = 1; });
-      kb.on('keydown-TWO',   () => { this.speedMultiplier = 2; });
-      kb.on('keydown-THREE', () => { this.speedMultiplier = 4; });
-      // 게임: [Z] — 화면 안 첫 호중구로 줌인 → 세포 내부 phase 진입.
-      //        바이러스 침입 메커닉이 정해지면 이 트리거 자리에 그 이벤트가 들어감.
-      kb.on('keydown-Z', () => this.zoomIntoNeutrophil());
-      // 게임: [ESC] — 세포 내부에서 혈관 뷰로 복귀.
-      kb.on('keydown-ESC', () => this.exitInside());
+      // 게임: 숫자키 1~3 = speed multiplier (shift 없음). shift+1~6 = 변이 1~6 (디버그).
+      //   Phaser keydown 콜백 인자 = KeyboardEvent. shiftKey 검사로 분기.
+      kb.on('keydown-ONE',   (e: KeyboardEvent) => { if (e.shiftKey) this.debugApplyMutation('zombie'); else this.speedMultiplier = 1; });
+      kb.on('keydown-TWO',   (e: KeyboardEvent) => { if (e.shiftKey) this.debugApplyMutation('cancer'); else this.speedMultiplier = 2; });
+      kb.on('keydown-THREE', (e: KeyboardEvent) => { if (e.shiftKey) this.debugApplyMutation('corruption'); else this.speedMultiplier = 4; });
+      kb.on('keydown-FOUR',  (e: KeyboardEvent) => { if (e.shiftKey) this.debugApplyMutation('hyperactive'); });
+      kb.on('keydown-FIVE',  (e: KeyboardEvent) => { if (e.shiftKey) this.debugApplyMutation('paralysis'); });
+      kb.on('keydown-SIX',   (e: KeyboardEvent) => { if (e.shiftKey) this.debugApplyMutation('chaos'); });
+      // 게임: [Z] 디버그 — 무작위 NEUTROPHIL 호스트로 풍선 등장 (페이즈 2 진입).
+      //   풍선 풀 가득 차 있으면 무시. infected 트리거와 동일한 경로.
+      kb.on('keydown-Z', () => this.debugSpawnBubble());
+      // 게임: [M] 디버그 — 변이 안 된 NEUTROPHIL 1마리 무작위 선정 → 무작위 변이 적용.
+      //   페이즈 2 거치지 않고 즉시 변이 → Stage 11~13 페이즈 1 동작 검증용.
+      kb.on('keydown-M', () => this.debugRandomMutation());
+      // 게임: [ESC] 컷신 진행 중이면 스킵 → placing 으로 전환.
+      kb.on('keydown-ESC', () => {
+        if (this.phase === 'cutscene') this.endCutscene();
+      });
+      // 게임: [I] 페이즈 2 인터렉션 모드 토글. 디폴트 관전, 토글 시 개입.
+      kb.on('keydown-I', () => {
+        this.interactive = !this.interactive;
+        console.log('[mode]', this.interactive ? 'INTERACTIVE' : 'OBSERVE');
+      });
     }
   }
 
-  // 게임: ADDED_TO_SCENE 리스너 — 새로 추가된 GameObject 를 outerLayer 로 라우팅 + cam2 ignore.
-  //   Phaser 의 Camera.ignore(Layer) 는 호출 시점의 자식만 처리하고 이후 추가는 자동 적용 X.
-  //   따라서 객체별 명시 ignore 가 필요. inner 컨텐츠는 routing 후 addToInner(...) 로 재이동.
-  //   주의: Phaser Layer.add 가 ADDED_TO_SCENE 을 *재발화* 하므로 (Layer.js addChildCallback),
-  //         이미 inner/outer Layer 에 들어있는 객체는 가드로 무시해야 무한 루프 방지.
-  //         Phaser Layer 는 자식 추적을 displayList 속성으로 함 (parentContainer 가 아님).
-  private routeAddedToOuter(gameObject: Phaser.GameObjects.GameObject): void {
-    if (gameObject instanceof Phaser.GameObjects.Layer) return;
-    const dl = (gameObject as { displayList?: unknown }).displayList;
-    if (dl === this.innerLayer || dl === this.outerLayer) return;
-    this.outerLayer.add(gameObject);
-    this.cam2.ignore(gameObject);
+  // 게임: 디버그용 — 변이 안 된 살아있는 NEUTROPHIL 후보 중 무작위 선정 → 6 변이 중 균등.
+  //   다중 변이 정책: 이미 변이된 호중구는 후보 제외 (mutation === null 만).
+  private debugRandomMutation(): void {
+    const KINDS: MutationKind[] = ['zombie', 'cancer', 'corruption', 'hyperactive', 'paralysis', 'chaos'];
+    const kind = KINDS[Math.floor(Math.random() * KINDS.length)];
+    this.debugApplyMutation(kind);
   }
 
-  // 게임: inner 컨텐츠 등록 헬퍼 — innerLayer 로 reparent + 카메라 필터 정정.
-  //   생성 직후엔 ADDED_TO_SCENE 리스너가 outer 라우팅 + cam2.ignore 를 이미 적용했으므로,
-  //   여기선 cam1 ignore 추가 + cam2 ignore 비트 해제 (둘 다 ignore 면 어디서도 안 보임).
-  //   Phaser: GameObject.cameraFilter 는 ignore 카메라 id 비트마스크. AND ~id 로 해제.
-  private addToInner(gameObject: Phaser.GameObjects.GameObject): void {
-    const filtered = gameObject as Phaser.GameObjects.GameObject & { cameraFilter: number };
-    const before = filtered.cameraFilter;
-    this.innerLayer.add(gameObject);
-    this.cameras.main.ignore(gameObject);
-    filtered.cameraFilter &= ~this.cam2.id;
-    console.log('[addToInner]', gameObject.constructor.name,
-      'cameraFilter:', before, '→', filtered.cameraFilter,
-      '(cam1.id=', this.cameras.main.id, 'cam2.id=', this.cam2.id, ')');
+  // 게임: 디버그용 — 특정 종류 변이 적용. 변이 안 된 살아있는 NEUTROPHIL 무작위 선정.
+  //   Shift+1~6 단축키 + [M] 무작위 가 공통 호출. 후보 없으면 skip.
+  private debugApplyMutation(kind: MutationKind): void {
+    const candidates = this.whiteCellBehavior
+      .getAlive()
+      .filter((c) => c.dnaKind === 'NEUTROPHIL' && c.mutation === null);
+    if (candidates.length === 0) {
+      console.log('[debug mutation]', kind, '— no eligible NEUTROPHIL');
+      return;
+    }
+    const target = candidates[Math.floor(Math.random() * candidates.length)];
+    target.setDna(applyMutation(target.dna, kind));
+    target.setMutation(kind);
+    if (kind === 'cancer') target.beginCancerDivide(this.gameTime);
+    if (kind === 'corruption') target.beginCorruption(this.gameTime);
+    if (kind === 'hyperactive') target.beginHyperactive(this.gameTime);
+    if (kind === 'paralysis') target.beginParalysis(this.gameTime);
+    console.log('[debug mutation]', kind, '→ host at', target.x.toFixed(0), target.y.toFixed(0));
   }
+
+  // ==================== 컷신 시스템 (Session 21) ====================
+
+  // 게임: 컷신 시작 — phase='cutscene' + 첫 step 셋업 + UI 생성.
+  private beginCutscene(): void {
+    this.phase = 'cutscene';
+    this.cutsceneStepIndex = 0;
+    this.cutsceneLineIndex = 0;
+    this.cutsceneWordIndex = 0;
+    this.cutsceneWordTimer = 0;
+    this.cutsceneLinePause = 0;
+    this.cutsceneAwaitingClick = false;
+    this.cutsceneActionTimer = 0;
+    this.cutsceneSimActive = false;
+    this.cutsceneNutPhase = '';
+    this.cutsceneNutSpawned = 0;
+    this.cutsceneNutPositions = [];
+    this.createCutsceneUI();
+    console.log('[cutscene] begin, steps=', this.cutsceneSteps.length);
+    this.applyCutsceneStep();
+  }
+
+  // 게임: 컷신 UI 생성 — 화면 위쪽에 텍스트 박스 (둥근 사각형 배경 + 텍스트 + 클릭 힌트).
+  //   레이아웃: 좌우 마진 30, 박스 높이 260 (텍스트 5~6 라인 + 여백), 상단 18% 위치.
+  //   위쪽 배치 = 아래쪽 객체 (spawn 되는 호중구/세균/영양분) 가 텍스트 박스 가려지지 X.
+  private createCutsceneUI(): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const margin = 30;
+    const boxH = 260;
+    const boxX = margin;
+    const boxY = Math.round(H * 0.18);
+    const boxW = W - margin * 2;
+
+    const bg = this.add.graphics();
+    bg.fillStyle(0x000000, 0.75);
+    bg.fillRoundedRect(boxX, boxY, boxW, boxH, 16);
+    bg.lineStyle(2, 0x88ccff, 0.6);
+    bg.strokeRoundedRect(boxX, boxY, boxW, boxH, 16);
+    bg.setDepth(BUBBLE_DEPTH + 20);
+    this.cutsceneUiBg = bg;
+
+    const text = this.add.text(W / 2, boxY + boxH / 2, '', {
+      color: '#ffffff',
+      fontFamily: 'ui-monospace, monospace',
+      fontSize: '20px',
+      align: 'center',
+      wordWrap: { width: boxW - 40 },
+      lineSpacing: 6,
+    });
+    text.setOrigin(0.5, 0.5);
+    text.setDepth(BUBBLE_DEPTH + 21);
+    this.cutsceneUiText = text;
+
+    const hint = this.add.text(boxX + boxW - 24, boxY + boxH - 16, '▼ 클릭', {
+      color: '#88ccff',
+      fontFamily: 'ui-monospace, monospace',
+      fontSize: '12px',
+    });
+    hint.setOrigin(1, 1);
+    hint.setDepth(BUBBLE_DEPTH + 21);
+    hint.setAlpha(0);
+    this.cutsceneUiHint = hint;
+  }
+
+  // 게임: 컷신 UI 제거 — endCutscene 시 호출.
+  private destroyCutsceneUI(): void {
+    this.cutsceneUiBg?.destroy();
+    this.cutsceneUiText?.destroy();
+    this.cutsceneUiHint?.destroy();
+    this.cutsceneUiBg = null;
+    this.cutsceneUiText = null;
+    this.cutsceneUiHint = null;
+  }
+
+  // 게임: 컷신 종료 — UI 제거 + 영양분 enableAll + 시작 spawn + placement 진입.
+  //   세균 frozen 도 해제. cutsceneSimActive false. populateStageStart 가 호중구/세균/대식세포 등장.
+  private endCutscene(): void {
+    if (this.phase !== 'cutscene') return;
+    console.log('[cutscene] end');
+    this.destroyCutsceneUI();
+    this.cutsceneSimActive = false;
+    this.bacteriaBehavior.frozen = false;
+    this.cutsceneSparkleGfx?.destroy();
+    this.cutsceneSparkleGfx = null;
+    this.nutrientSystem.enableAll();
+    this.populateStageStart();
+    this.beginNextPlacement(this.scale.width, this.scale.height);
+  }
+
+  // 게임: 스테이지 시작 spawn — 호중구/세균/대식세포. 컷신 종료 시점에 1회 호출.
+  //   컷신 중에 spawn 한 세균 (spawnBacteria 액션) 은 그대로 유지 — 분열한 자식 포함 게임에 잔류.
+  //   호중구는 컷신 중에 spawn 된 게 있을 수 있음 (spawnNeutrophils 액션). 이건 그대로 유지.
+  private populateStageStart(): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    for (let i = 0; i < this.currentStage.startNeutrophils; i++) {
+      const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+      const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
+      const phase = Math.random() * Math.PI * 2;
+      const hp = NEUTROPHIL.combat.maxHp * (0.6 + Math.random() * 0.4);
+      this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, phase, hp));
+    }
+    for (let i = 0; i < this.currentStage.startBacteria; i++) {
+      const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+      const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
+      const phase = Math.random() * Math.PI * 2;
+      const hp = BACTERIA_A.combat.maxHp * (0.6 + Math.random() * 0.4);
+      this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase, hp);
+    }
+    const floorY = H - MACROPHAGE.shape.base * 0.55;
+    for (let i = 0; i < MACROPHAGE_COUNT; i++) {
+      const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+      const phase = Math.random() * Math.PI * 2;
+      this.macrophageSystem.add(new Macrophage(MACROPHAGE, this.cellRenderer, x, floorY, phase));
+    }
+  }
+
+  // 게임: 현재 step 진입 처리. step 타입별 상태 초기화.
+  //   narration: UI 표시 + 단어 타이핑 시작. action: UI 숨김 + kind 별 spawn/sim 셋업.
+  private applyCutsceneStep(): void {
+    if (this.cutsceneStepIndex >= this.cutsceneSteps.length) {
+      this.endCutscene();
+      return;
+    }
+    const step = this.cutsceneSteps[this.cutsceneStepIndex];
+    if (step.type === 'end') {
+      this.endCutscene();
+      return;
+    }
+    if (step.type === 'narration') {
+      this.cutsceneLineIndex = 0;
+      this.cutsceneWordIndex = 0;
+      this.cutsceneWordTimer = CUTSCENE_WORD_INTERVAL;
+      this.cutsceneLinePause = 0;
+      this.cutsceneAwaitingClick = false;
+      this.showCutsceneUI();
+      this.cutsceneUiText?.setText('');
+      this.cutsceneUiHint?.setAlpha(0);
+      this.cutsceneSimActive = false;
+      this.bacteriaBehavior.frozen = false;
+    } else {
+      // 게임: ACTION 진입 — 텍스트 박스 숨김, kind 별 셋업.
+      this.cutsceneActionTimer = 0;
+      this.cutsceneAwaitingClick = false;
+      this.hideCutsceneUI();
+      this.applyCutsceneAction(step.kind);
+    }
+  }
+
+  // 게임: 컷신 UI visible/hidden 토글 — ACTION 진입 시 hide, narration 시 show.
+  private hideCutsceneUI(): void {
+    this.cutsceneUiBg?.setAlpha(0);
+    this.cutsceneUiText?.setAlpha(0);
+    this.cutsceneUiHint?.setAlpha(0);
+  }
+  private showCutsceneUI(): void {
+    this.cutsceneUiBg?.setAlpha(1);
+    this.cutsceneUiText?.setAlpha(1);
+    this.cutsceneUiHint?.setAlpha(0);  // hint 는 라인 완료 후 별도 표시
+  }
+
+  // 게임: ACTION kind 별 진입 셋업 (Session 21 Stage B).
+  //   spawnNutrients   : sim 정지. sub-phase 'spawning' 으로 진입, 0.5s 간격 5개 spawn.
+  //   spawnBacteria    : sim 활성. 화면 중앙 2 세균 spawn. 영양분 active=0 시 종료.
+  //   spawnNeutrophils : sim 활성 + 세균 frozen. 호중구 3 spawn. live cells/bacteria 0 시 종료.
+  private applyCutsceneAction(kind: string): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    if (kind === 'spawnNutrients') {
+      this.cutsceneSimActive = false;
+      this.cutsceneNutPhase = 'spawning';
+      this.cutsceneNutSpawned = 0;
+      this.cutsceneNutPositions = [];
+      this.cutsceneActionTimer = 0;  // 다음 spawn 까지 elapsed
+      return;
+    }
+    if (kind === 'spawnBacteria') {
+      this.cutsceneSimActive = true;
+      this.bacteriaBehavior.frozen = false;
+      // 게임: 중앙 ±40 박스 안 2마리 spawn. 자동 영양분 흡수 행동.
+      for (let i = 0; i < 2; i++) {
+        const x = W / 2 + (Math.random() - 0.5) * 80;
+        const y = H / 2 + (Math.random() - 0.5) * 80;
+        const phase = Math.random() * Math.PI * 2;
+        this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
+      }
+      return;
+    }
+    if (kind === 'spawnNeutrophils') {
+      this.cutsceneSimActive = true;
+      this.bacteriaBehavior.frozen = true;  // 세균 정지
+      // 게임: 호중구 1마리 — 화면 중앙 (세균/영양분 위치). 자동으로 가까운 세균 추적.
+      this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, W / 2, H / 2, Math.random() * Math.PI * 2));
+      return;
+    }
+    console.warn('[cutscene] unknown action kind:', kind);
+  }
+
+  // 게임: 매 프레임 컷신 진행 — dt 기준. real time (Phaser delta) 사용 (gameTime 정지 무관).
+  private updateCutscene(dtReal: number): void {
+    if (this.cutsceneStepIndex >= this.cutsceneSteps.length) return;
+    const step = this.cutsceneSteps[this.cutsceneStepIndex];
+
+    if (step.type === 'narration') {
+      this.updateCutsceneNarration(step.lines, dtReal);
+    } else if (step.type === 'action') {
+      this.updateCutsceneAction(step.kind, dtReal);
+    } else {
+      this.endCutscene();
+    }
+  }
+
+  // 게임: narration 진행 — 라인 안 단어별 타이핑, 라인 끝 pause, 모든 라인 표시 후 클릭 대기.
+  private updateCutsceneNarration(lines: string[], dtReal: number): void {
+    if (this.cutsceneAwaitingClick) return;
+    // 게임: 라인 사이 pause 진행 중이면 timer 만 감소.
+    if (this.cutsceneLinePause > 0) {
+      this.cutsceneLinePause -= dtReal;
+      if (this.cutsceneLinePause <= 0) {
+        this.cutsceneLineIndex++;
+        this.cutsceneWordIndex = 0;
+        this.cutsceneWordTimer = CUTSCENE_WORD_INTERVAL;
+      }
+      return;
+    }
+    // 게임: 다음 단어 추가 timer.
+    this.cutsceneWordTimer -= dtReal;
+    if (this.cutsceneWordTimer > 0) return;
+    const lineText = lines[this.cutsceneLineIndex];
+    const words = lineText.split(/\s+/);
+    this.cutsceneWordIndex++;
+    if (this.cutsceneWordIndex >= words.length) {
+      // 게임: 라인 완료. 다음 라인 또는 마지막이면 클릭 대기.
+      this.renderCutsceneNarration(lines);
+      if (this.cutsceneLineIndex >= lines.length - 1) {
+        this.cutsceneAwaitingClick = true;
+        this.cutsceneUiHint?.setAlpha(1);
+      } else {
+        this.cutsceneLinePause = CUTSCENE_LINE_PAUSE;
+      }
+      return;
+    }
+    this.cutsceneWordTimer = CUTSCENE_WORD_INTERVAL;
+    this.renderCutsceneNarration(lines);
+  }
+
+  // 게임: 현재 narration 상태를 텍스트 박스에 그림. 완료된 라인 + 진행 중인 라인의 N 단어.
+  private renderCutsceneNarration(lines: string[]): void {
+    if (!this.cutsceneUiText) return;
+    const out: string[] = [];
+    for (let i = 0; i < this.cutsceneLineIndex; i++) out.push(lines[i]);
+    const currentLine = lines[this.cutsceneLineIndex];
+    if (currentLine !== undefined) {
+      const words = currentLine.split(/\s+/);
+      const shown = words.slice(0, this.cutsceneWordIndex).join(' ');
+      if (shown.length > 0) out.push(shown);
+    }
+    this.cutsceneUiText.setText(out.join('\n'));
+  }
+
+  // 게임: action step 진행 (Session 21 Stage B). kind 별 분기.
+  private updateCutsceneAction(kind: string, dtReal: number): void {
+    if (kind === 'spawnNutrients') {
+      this.updateCutsceneSpawnNutrients(dtReal);
+      return;
+    }
+    if (kind === 'spawnBacteria') {
+      this.updateCutsceneSpawnBacteria(dtReal);
+      return;
+    }
+    if (kind === 'spawnNeutrophils') {
+      this.updateCutsceneSpawnNeutrophils(dtReal);
+      return;
+    }
+    // unknown — placeholder 처럼 3s 후 진행.
+    this.cutsceneActionTimer += dtReal;
+    if (this.cutsceneActionTimer >= CUTSCENE_ACTION_PLACEHOLDER_DURATION) this.advanceCutsceneStep();
+  }
+
+  // 게임: 영양분 5개 순차 spawn → pause → sparkle.
+  //   spawning : 0.5s 간격 5번 spawnAt. 위치는 화면 중앙 ±60 무작위 (모여있게).
+  //   pause    : 5번째 후 0.6s 정지.
+  //   sparkling: 1s 동안 원 펄스 (반지름↑ + alpha↓).
+  private updateCutsceneSpawnNutrients(dtReal: number): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    this.cutsceneActionTimer += dtReal;
+    if (this.cutsceneNutPhase === 'spawning') {
+      const TARGET_COUNT = 5;
+      const SPAWN_INTERVAL = 0.5;
+      const nextSpawnAt = this.cutsceneNutSpawned * SPAWN_INTERVAL;
+      if (this.cutsceneActionTimer >= nextSpawnAt && this.cutsceneNutSpawned < TARGET_COUNT) {
+        const x = W / 2 + (Math.random() - 0.5) * 120;
+        const y = H / 2 + (Math.random() - 0.5) * 120;
+        this.nutrientSystem.spawnAt(this.cutsceneNutSpawned, x, y);
+        this.cutsceneNutPositions.push({ x, y });
+        this.cutsceneNutSpawned++;
+      }
+      if (this.cutsceneNutSpawned >= TARGET_COUNT) {
+        this.cutsceneNutPhase = 'pause';
+        this.cutsceneActionTimer = 0;
+      }
+      return;
+    }
+    if (this.cutsceneNutPhase === 'pause') {
+      if (this.cutsceneActionTimer >= 0.6) {
+        this.cutsceneNutPhase = 'sparkling';
+        this.cutsceneActionTimer = 0;
+        this.cutsceneSparkleGfx = this.add.graphics();
+        this.cutsceneSparkleGfx.setDepth(BUBBLE_DEPTH + 19);
+      }
+      return;
+    }
+    if (this.cutsceneNutPhase === 'sparkling') {
+      const DURATION = 1.0;
+      const tt = Math.min(1, this.cutsceneActionTimer / DURATION);
+      const gfx = this.cutsceneSparkleGfx;
+      if (gfx) {
+        gfx.clear();
+        const r = 8 + tt * 24;
+        const alpha = 1 - tt;
+        gfx.lineStyle(2, 0xffff88, alpha);
+        for (const p of this.cutsceneNutPositions) gfx.strokeCircle(p.x, p.y, r);
+      }
+      if (tt >= 1) {
+        gfx?.destroy();
+        this.cutsceneSparkleGfx = null;
+        this.advanceCutsceneStep();
+      }
+      return;
+    }
+  }
+
+  // 게임: 세균 자동 행동 (영양분 흡수 + 분열). 영양분 active=0 또는 maxTime 15s 시 종료.
+  private updateCutsceneSpawnBacteria(dtReal: number): void {
+    this.cutsceneActionTimer += dtReal;
+    const MAX_TIME = 15;
+    if (this.nutrientSystem.getActiveCount() === 0 || this.cutsceneActionTimer >= MAX_TIME) {
+      this.advanceCutsceneStep();
+    }
+  }
+
+  // 게임: 호중구 vs 정지 세균. 살아있는 호중구 0 또는 살아있는 세균 0 또는 maxTime 시 종료.
+  private updateCutsceneSpawnNeutrophils(dtReal: number): void {
+    this.cutsceneActionTimer += dtReal;
+    const MAX_TIME = 15;
+    const liveBacteria = this.bacteriaBehavior.getAlive().length;
+    const liveCells = this.whiteCellBehavior.getAlive().length;
+    if (liveBacteria === 0 || liveCells === 0 || this.cutsceneActionTimer >= MAX_TIME) {
+      this.bacteriaBehavior.frozen = false;
+      this.advanceCutsceneStep();
+    }
+  }
+
+  // 게임: 다음 step 진행 — index++ + applyCutsceneStep. action 종료 공통.
+  private advanceCutsceneStep(): void {
+    this.cutsceneStepIndex++;
+    this.applyCutsceneStep();
+  }
+
+  // 게임: 컷신 클릭 — narration: 진행 중이면 즉시 모두 표시, 완료 시 다음 step.
+  //   action: 클릭 무시 (자동 진행). Stage B 에서 skip 옵션 추가 가능.
+  private handleCutsceneClick(): void {
+    if (this.cutsceneStepIndex >= this.cutsceneSteps.length) return;
+    const step = this.cutsceneSteps[this.cutsceneStepIndex];
+    if (step.type !== 'narration') return;
+
+    if (!this.cutsceneAwaitingClick) {
+      // 게임: 즉시 모두 표시 — 모든 라인 펼침.
+      const allText = step.lines.join('\n');
+      this.cutsceneUiText?.setText(allText);
+      this.cutsceneAwaitingClick = true;
+      this.cutsceneUiHint?.setAlpha(1);
+      return;
+    }
+    // 게임: 다음 step 진행.
+    this.cutsceneStepIndex++;
+    this.applyCutsceneStep();
+  }
+
+  // ==================== 컷신 시스템 끝 ====================
 
   // 게임: 다음 placement 슬롯 — 큐 비면 phase='running' 으로 전환.
   //        미리보기 핸들 (반투명 alpha 0.6) 마우스 위치에 생성.
   private beginNextPlacement(W: number, H: number): void {
     if (this.placementQueue.length === 0) {
       this.phase = 'running';
+      // 게임: running 진입 시점 = stage 시작. cutscene 동안 진행된 gameTime 을 기준으로 stage 시간 계산.
+      this.stageStartTime = this.gameTime;
       this.placementHandle?.destroy();
       this.placementHandle = null;
       this.placementText.setText('');
@@ -499,54 +1001,143 @@ export class BloodScene extends Phaser.Scene {
     this.beginNextPlacement(this.scale.width, this.scale.height);
   }
 
-  // 게임: 호중구 1마리 골라 그 위로 카메라 줌인 → 세포 내부 phase 진입.
-  //   - 대상 없거나 phase != running 이면 noop
-  //   - 동적 줌: cell base 가 화면 단축의 ZOOM_FILL_RATIO 차지하도록
-  //   - 외부 sim 정지는 update() 의 phase 분기로 처리 (paused 플래그는 [P] 키 전용)
-  private zoomIntoNeutrophil(): void {
-    console.log('[zoomIntoNeutrophil] phase=', this.phase);
+  // 게임: [Z] 디버그 — 살아있는 일반 NEUTROPHIL 무작위 선정 후 풍선 spawn (페이즈 2 진입).
+  //   풍선 풀 가득 차 있으면 무시. infected 트리거와 동일한 경로.
+  private debugSpawnBubble(): void {
     if (this.phase !== 'running') return;
-    // 게임: 살아있는 일반 호중구 (NEUTROPHIL) 후보 중 무작위 선정.
-    //   진화한 NK/SUPER/BCELL/TCELL 은 제외 — 변이는 일반 호중구 대상.
-    const candidates = this.whiteCellBehavior.getAlive().filter((c) => c.dnaKind === 'NEUTROPHIL');
+    if (this.bubbles.length >= BUBBLE_MAX) {
+      console.log('[debug Z] bubble pool full');
+      return;
+    }
+    const candidates = this.whiteCellBehavior
+      .getAlive()
+      .filter((c) => c.dnaKind === 'NEUTROPHIL' && c.mutation === null && !this.isHostingBubble(c));
     if (candidates.length === 0) {
-      console.log('[zoomIntoNeutrophil] no NEUTROPHIL target found');
+      console.log('[debug Z] no NEUTROPHIL target found');
       return;
     }
     const target = candidates[Math.floor(Math.random() * candidates.length)];
-
-    this.hostCell = target;
-    this.phase = 'zoomingIn';
-
-    const W = this.scale.width;
-    const H = this.scale.height;
-    const ZOOM_FILL_RATIO = 0.60; // cell base 지름이 화면 단축의 60%
-    const targetZoom = (Math.min(W, H) * ZOOM_FILL_RATIO) / (target.dna.shape.base * 2);
-
-    const cam = this.cameras.main;
-    const ZOOM_DURATION = 800;
-    cam.pan(target.x, target.y, ZOOM_DURATION, Phaser.Math.Easing.Cubic.InOut);
-    cam.zoomTo(targetZoom, ZOOM_DURATION, Phaser.Math.Easing.Cubic.InOut);
-    console.log('[zoomIntoNeutrophil] tween started, target zoom=', targetZoom, 'host=', target.x, target.y);
-
-    cam.once(Phaser.Cameras.Scene2D.Events.ZOOM_COMPLETE, () => {
-      console.log('[ZOOM_COMPLETE] firing → enterInside');
-      this.enterInside();
-    });
+    this.spawnBubble(target);
   }
 
-  // 게임: 줌인 완료 → 세포 내부 phase. innerTime 0 부터, cam2 visible, inner 컨텐츠 보장.
-  //   wave 새로 생성 — 패턴 분포 shuffle. nextSpawnTime 은 진입 직후 잠깐 여유.
-  private enterInside(): void {
-    console.log('[enterInside] before: phase=', this.phase, 'cam2.visible=', this.cam2.visible);
-    this.phase = 'inside';
-    this.innerTime = 0;
-    this.ensureInnerContent();
-    this.cam2.setVisible(true);
+  // 게임: 매 프레임 — corruption 호중구 소멸 시 다른 NEUTROPHIL 호스트로 풍선 spawn.
+  //   pendingCorruptionFinale 은 즉시 false — 재진입 방지. isAbsorbed 는 이미 true.
+  //   풍선 풀 가득 차 있으면 조용히 종료 (한 프레임 한 번만).
+  private checkCorruptionTrigger(): void {
+    if (this.phase !== 'running') return;
+    for (const c of this.whiteCellBehavior.getAll()) {
+      if (!c.pendingCorruptionFinale) continue;
+      c.pendingCorruptionFinale = false;
+      if (this.bubbles.length >= BUBBLE_MAX) {
+        console.log('[corruption finale] bubble pool full — skip');
+        return;
+      }
+      const candidates = this.whiteCellBehavior
+        .getAlive()
+        .filter((other) => other !== c && other.dnaKind === 'NEUTROPHIL' && other.mutation === null && !this.isHostingBubble(other));
+      if (candidates.length === 0) {
+        console.log('[corruption finale] no NEUTROPHIL candidate — skip');
+        return;
+      }
+      const newHost = candidates[Math.floor(Math.random() * candidates.length)];
+      console.log('[corruption finale] spawn bubble → host', newHost.x.toFixed(0), newHost.y.toFixed(0));
+      this.spawnBubble(newHost);
+      return; // 한 프레임 한 번만
+    }
+  }
+
+  // 게임: hyperactive 변이 폭발 트리거. pendingHyperactiveExplosion=true 인 호중구 위치 기준
+  //   반경 200px 내 살아있는 호중구/세균 모두 즉사 (isAbsorbed=true).
+  //   본인은 이미 isAbsorbed (WhiteCell.updateAlive 가 set). 다음 cleanupAbsorbed 에 풀에서 제거.
+  private checkHyperactiveTrigger(): void {
+    for (const c of this.whiteCellBehavior.getAll()) {
+      if (!c.pendingHyperactiveExplosion) continue;
+      c.pendingHyperactiveExplosion = false;
+      const ex = c.x;
+      const ey = c.y;
+      const r2 = HYPERACTIVE_EXPLOSION_RADIUS * HYPERACTIVE_EXPLOSION_RADIUS;
+      let killed = 0;
+      for (const other of this.whiteCellBehavior.getAlive()) {
+        if (other === c) continue;
+        const dx = other.x - ex;
+        const dy = other.y - ey;
+        if (dx * dx + dy * dy <= r2) { other.isAbsorbed = true; killed++; }
+      }
+      for (const b of this.bacteriaBehavior.getAlive()) {
+        const dx = b.x - ex;
+        const dy = b.y - ey;
+        if (dx * dx + dy * dy <= r2) { b.isAbsorbed = true; killed++; }
+      }
+      console.log('[hyperactive explosion] at', ex.toFixed(0), ey.toFixed(0), 'killed', killed);
+    }
+  }
+
+  // 게임: paralysis 외부 전파 — 변이 호중구가 cycle active 인 동안 매 프레임 인접 정상 호중구에 마비 부여.
+  //   1단계 전파만 — 전파된 호중구는 mutation=null 이라 추가 사이클 없음 → 무한 전파 X.
+  //   paralyzedUntil = max(기존, t + DURATION) 로 갱신 (이미 마비 중이면 시간만 연장).
+  private checkParalysisPropagation(t: number): void {
+    const all = this.whiteCellBehavior.getAll();
+    const r2 = PARALYSIS_PROPAGATION_RADIUS * PARALYSIS_PROPAGATION_RADIUS;
+    for (const src of all) {
+      if (src.isDead()) continue;
+      if (src.mutation !== 'paralysis') continue;
+      if (src.paralysisStartTime === null) continue;
+      // 게임: cycle active 검사 — isParalyzed 는 외부 전파도 포함하므로 자기 cycle 만 별도 검사.
+      const phase = (t - src.paralysisStartTime) % 3;
+      if (phase >= 0.5) continue;
+      const until = t + PARALYSIS_PROPAGATION_DURATION;
+      for (const tgt of all) {
+        if (tgt === src) continue;
+        if (tgt.isDead()) continue;
+        if (tgt.mutation !== null) continue;
+        if (tgt.dnaKind !== 'NEUTROPHIL') continue;
+        const dx = tgt.x - src.x;
+        const dy = tgt.y - src.y;
+        if (dx * dx + dy * dy > r2) continue;
+        if (until > tgt.paralyzedUntil) tgt.paralyzedUntil = until;
+      }
+    }
+  }
+
+  // 게임: 매 프레임 — infected 세균이 호중구에 죽었으면 그 호중구로 풍선 spawn.
+  //   조건: b.isDead + b.isInfected + b.killedByCell 살아있음 + NEUTROPHIL + mutation 없음 + 풀 여유 + 이미 풍선 보유 X.
+  //   진입 후 b.isInfected/killedByCell 정리 — 재진입 방지.
+  private checkInfectedKillTrigger(): void {
+    if (this.phase !== 'running') return;
+    for (const b of this.bacteriaBehavior.getAll()) {
+      if (!b.isDead()) continue;
+      if (!b.isInfected) continue;
+      if (b.killedByCell === null) continue;
+      const host = b.killedByCell;
+      // 게임: 한 번만 트리거. 다음 프레임 재검사 시 무시되도록 즉시 정리.
+      b.isInfected = false;
+      b.killedByCell = null;
+      if (host.isDead() || host.isAbsorbed) continue;
+      if (host.dnaKind !== 'NEUTROPHIL') continue;
+      if (host.mutation !== null) continue;
+      if (this.bubbles.length >= BUBBLE_MAX) {
+        console.log('[infected trigger] bubble pool full — skip');
+        continue;
+      }
+      if (this.isHostingBubble(host)) continue;
+      console.log('[infected trigger] spawn bubble → host', host.x.toFixed(0), host.y.toFixed(0));
+      this.spawnBubble(host);
+      return; // 한 프레임 한 번만
+    }
+  }
+
+  // 게임: 풍선 등장 — host 호중구에 페이즈 2 wave 가 진행되는 화면 우상단 풍선 추가.
+  //   외부 sim 정지 X — 매 프레임 updateBubbles 가 풍선 진행. host 사망 시 closeBubble 즉시.
+  //   spawn 위치 = 우상단 + (기존 풍선 수 × spacing) 세로 정렬. Stage A 는 BUBBLE_MAX=1 이라 단일.
+  private spawnBubble(host: import('../entities/WhiteCell').WhiteCell): void {
+    const W = this.scale.width;
+    const slot = this.bubbles.length;
+    const centerX = W - BUBBLE_MARGIN_RIGHT - BUBBLE_SIZE / 2;
+    const centerY = BUBBLE_MARGIN_TOP + BUBBLE_SIZE / 2 + slot * (BUBBLE_SIZE + BUBBLE_SPACING);
 
     const queue = WAVE_KIND_DISTRIBUTION.slice();
     shuffleInPlace(queue);
-    this.waveState = {
+    const wave: WaveState = {
       spawnQueue: queue,
       nextSpawnTime: WAVE_FIRST_DELAY,
       hits: 0,
@@ -555,156 +1146,265 @@ export class BloodScene extends Phaser.Scene {
       shieldCharges: WAVE_SHIELD_CHARGES,
       shieldActiveUntil: 0,
     };
-    this.mutationText?.setText('');
 
-    console.log('[enterInside] after: phase=', this.phase, 'cam2.visible=', this.cam2.visible,
-      'innerLayer.length=', this.innerLayer.length, 'waveQueue=', queue.join(','));
-  }
+    // 게임: frame + 컨텐츠 그래픽. 정상 displayList 에 그대로 추가 (Layer 시스템 제거).
+    //   모두 alpha=0 시작 — updateBubble 의 페이드 인이 0→1.
+    //   setDepth(BUBBLE_DEPTH) — 나중 spawn 된 외부 객체 (호중구/세균 등) 도 풍선 아래로 그림.
+    const frameGfx = this.add.graphics();
+    frameGfx.setAlpha(0);
+    frameGfx.setDepth(BUBBLE_DEPTH);
+    const contentsGfx = this.add.graphics();
+    contentsGfx.setPosition(centerX, centerY);
+    contentsGfx.setAlpha(0);
+    contentsGfx.setDepth(BUBBLE_DEPTH + 1);
+    // 게임: virusLayer = Container — 풍선 중심 origin. 안에 바이러스 / 쉴드 이펙트 Graphics 추가.
+    const virusLayer = this.add.container(centerX, centerY);
+    virusLayer.setAlpha(0);
+    virusLayer.setDepth(BUBBLE_DEPTH + 2);
 
-  // 게임: 세포 내부 컨텐츠 lazy 생성. 첫 진입 또는 restart 후 첫 진입에만 생성.
-  //   - dnaGfx       : 중앙 회전 DNA 나선 (10 세그먼트, hits 만큼 corrupted)
-  //   - bottomHud    : ESC 안내 텍스트
-  //   - innerHud     : 좌상단 wave 진행 상황 (hits/total, 변이율%)
-  //   - mutationText : 화면 중앙 위쪽 — wave 종결 시 변이 결과 표시
-  //   생성 직후 innerLayer.add 로 reparent → cam2 가 그리고 cam1 은 무시.
-  private ensureInnerContent(): void {
-    if (this.dnaGfx !== null) return;
-    const W = this.scale.width;
-    const H = this.scale.height;
-
-    const dna = this.add.graphics();
-    this.addToInner(dna);
-    this.dnaGfx = dna;
-
-    const bottomHud = this.add.text(W / 2, H - 30,
-      '[ESC] 나가기   |   클릭 = 쉴드 발동',
-      {
-        color: '#aaaaaa',
-        fontFamily: 'ui-monospace, monospace',
-        fontSize: '14px',
-      });
-    bottomHud.setOrigin(0.5, 0.5);
-    this.addToInner(bottomHud);
-
-    const innerHud = this.add.text(20, 20, '', {
+    const hudText = this.add.text(centerX, centerY + BUBBLE_SIZE / 2 - 24, '', {
       color: '#fc8',
       fontFamily: 'ui-monospace, monospace',
-      fontSize: '14px',
+      fontSize: '11px',
+      align: 'center',
     });
-    this.addToInner(innerHud);
-    this.innerHud = innerHud;
+    hudText.setOrigin(0.5, 0.5);
+    hudText.setAlpha(0);
+    hudText.setDepth(BUBBLE_DEPTH + 3);
 
-    const mutationText = this.add.text(W / 2, H / 2 - 120, '', {
+    // 게임: 결과 텍스트 — wave finalize 후 풍선 중앙에 강조 표시. 큰 폰트 + 외곽선 + 팝 tween.
+    //   진행 중에는 hudText 만 보이고 resultText 는 hidden. resolved 시 swap + tween 트리거.
+    const resultText = this.add.text(centerX, centerY, '', {
       color: '#ffe17a',
       fontFamily: 'ui-monospace, monospace',
       fontSize: '22px',
+      fontStyle: 'bold',
       align: 'center',
+      stroke: '#1a0a00',
+      strokeThickness: 4,
     });
-    mutationText.setOrigin(0.5, 0.5);
-    this.addToInner(mutationText);
-    this.mutationText = mutationText;
+    resultText.setOrigin(0.5, 0.5);
+    resultText.setAlpha(0);
+    resultText.setVisible(false);
+    resultText.setDepth(BUBBLE_DEPTH + 3);
 
-    console.log('[ensureInnerContent] innerLayer.length=', this.innerLayer.length);
+    const bubble: PhaseBubble = {
+      host,
+      localTime: 0,
+      spawnedAt: this.gameTime,
+      resolvedAt: null,
+      centerX,
+      centerY,
+      size: BUBBLE_SIZE,
+      wave,
+      viruses: [],
+      shieldHitEffects: [],
+      frameGfx,
+      contentsGfx,
+      virusLayer,
+      hudText,
+      resultText,
+      closed: false,
+      closing: false,
+      closeStartedAt: 0,
+    };
+    this.bubbles.push(bubble);
+    console.log('[spawnBubble] host=', host.x.toFixed(0), host.y.toFixed(0), 'slot=', slot);
   }
 
-  // 게임: 세포 내부 → 혈관 뷰 복귀. ESC 또는 wave 결과 자동 트리거. inside phase 에서만.
-  //   cam2 끄고 viruses/wave 정리 → 카메라 원위치 tween → running 복귀.
-  private exitInside(): void {
-    if (this.phase !== 'inside') return;
-    this.phase = 'zoomingOut';
-    this.cam2.setVisible(false);
-    this.clearViruses();
-    this.clearShieldHitEffects();
-    this.waveState = null;
-    this.mutationText?.setText('');
-
-    const cam = this.cameras.main;
-    const ZOOM_DURATION = 800;
-    cam.pan(this.scale.width / 2, this.scale.height / 2, ZOOM_DURATION, Phaser.Math.Easing.Cubic.InOut);
-    cam.zoomTo(1, ZOOM_DURATION, Phaser.Math.Easing.Cubic.InOut);
-    cam.once(Phaser.Cameras.Scene2D.Events.ZOOM_COMPLETE, () => {
-      this.phase = 'running';
-      this.hostCell = null;
-    });
+  // 게임: 풍선 닫기 요청 — 즉시 destroy 안 함. closing=true 만 set, updateBubble 이 페이드 아웃 진행.
+  //   페이드 끝나면 destroyBubble 가 실제 정리. wave 결과 자동 종료 / host 사망 / 결과 표시 후 모두 동일 경로.
+  private closeBubble(bubble: PhaseBubble): void {
+    if (bubble.closing || bubble.closed) return;
+    bubble.closing = true;
+    bubble.closeStartedAt = this.gameTime;
+    console.log('[closeBubble] fade-out start, remaining=', this.bubbles.length);
   }
 
-  // 게임: 내부 phase 진행 (외부 sim 정지). innerTime 만 진행.
-  //   1) wave spawn timer  2) DNA 나선 그리기 (hits 만큼 corrupted)
-  //   3) viruses 갱신 (hit 시 wave.hits++)  4) wave 종결 판정 / 결과 후 자동 복귀
-  //   5) inside HUD 갱신
-  private updateInside(delta: number): void {
-    if (!this.updateInsideLogged) {
-      console.log('[updateInside] FIRST CALL — phase=', this.phase,
-        'cam2.visible=', this.cam2.visible,
-        'innerLayer.length=', this.innerLayer.length,
-        'dnaGfx=', !!this.dnaGfx);
-      this.updateInsideLogged = true;
+  // 게임: 페이드 아웃 완료 후 실제 정리 — graphics destroy + 풀에서 제거.
+  private destroyBubble(bubble: PhaseBubble): void {
+    if (bubble.closed) return;
+    bubble.closed = true;
+    for (const v of bubble.viruses) v.gfx.destroy();
+    bubble.viruses = [];
+    for (const e of bubble.shieldHitEffects) e.gfx.destroy();
+    bubble.shieldHitEffects = [];
+    bubble.frameGfx.destroy();
+    bubble.contentsGfx.destroy();
+    bubble.virusLayer.destroy();
+    bubble.hudText.destroy();
+    bubble.resultText.destroy();
+    const idx = this.bubbles.indexOf(bubble);
+    if (idx >= 0) this.bubbles.splice(idx, 1);
+    console.log('[destroyBubble] removed, remaining=', this.bubbles.length);
+  }
+
+  // 게임: 풍선의 현재 alpha — 페이드 인 (spawnedAt→ +DURATION) + 페이드 아웃 (closing→ +DURATION).
+  //   페이드 인 = (gameTime - spawnedAt) / DURATION. 1 도달 후 정상.
+  //   페이드 아웃 = 1 - (gameTime - closeStartedAt) / DURATION. 0 도달 시 destroyBubble 시점.
+  private bubbleAlpha(b: PhaseBubble): number {
+    if (b.closing) {
+      const tt = (this.gameTime - b.closeStartedAt) / BUBBLE_FADE_DURATION;
+      return Math.max(0, 1 - tt);
     }
-    const dtReal = delta / 1000;
-    const dt = dtReal * this.speedMultiplier;
-    this.innerTime += dt;
-    const t = this.innerTime;
+    const tt = (this.gameTime - b.spawnedAt) / BUBBLE_FADE_DURATION;
+    return Math.min(1, tt);
+  }
 
-    // 1) wave 자동 spawn — innerTime 이 nextSpawnTime 도달할 때마다 1발.
-    const wave = this.waveState;
-    if (wave !== null && !wave.resolved) {
+  // 게임: 특정 host 가 이미 풍선 보유 중인지. spawn 시 중복 방지용.
+  private isHostingBubble(host: import('../entities/WhiteCell').WhiteCell): boolean {
+    for (const b of this.bubbles) if (b.host === host) return true;
+    return false;
+  }
+
+  // 게임: (x,y) 가 풍선 영역 안인지 — 사각형 hit test. 클릭 분기용.
+  private isPointInBubble(x: number, y: number, b: PhaseBubble): boolean {
+    const half = b.size / 2;
+    return x >= b.centerX - half && x <= b.centerX + half
+        && y >= b.centerY - half && y <= b.centerY + half;
+  }
+
+  // 게임: 매 프레임 활성 풍선들 갱신 — 외부 sim 과 동시 진행. host 사라짐 시 즉시 close 요청.
+  //   각 풍선의 localTime 는 외부 dt 와 동기 (speedMultiplier 영향 동일).
+  //   host 사라짐 = isDead() (hp<=0) OR isAbsorbed (풀에서 제거 예정 / 이미 제거됨).
+  //   변이 후 heal 된 호중구는 hp 풀이라 isDead()=false. hyperactive 폭발 / corruption finale 등으로
+  //   isAbsorbed=true 만 set 되는 경우도 잡음.
+  //   ⚠ closing 풍선도 updateBubble 호출해야 페이드 진행 + destroyBubble 도달. continue 금지.
+  private updateBubbles(dt: number): void {
+    // 게임: 역순 — 닫는 풍선이 배열에서 제거되므로.
+    for (let i = this.bubbles.length - 1; i >= 0; i--) {
+      const b = this.bubbles[i];
+      // 게임: 아직 closing 안 된 풍선의 host 가 사라지면 close 요청만 set. update 가 페이드 진행.
+      if (!b.closing && (b.host.isDead() || b.host.isAbsorbed)) {
+        console.log('[updateBubbles] host gone → close bubble',
+          'isDead=', b.host.isDead(), 'isAbsorbed=', b.host.isAbsorbed);
+        this.closeBubble(b);
+      }
+      this.updateBubble(b, dt);
+    }
+  }
+
+  // 게임: 단일 풍선 갱신 — wave spawn → 컨텐츠 갱신 → wave 종결 판정 → 결과 후 자동 close.
+  //   closing 중에는 wave/바이러스 진행 X (시각 페이드만). alpha 는 매 프레임 계산해 graphics 전체 적용.
+  private updateBubble(b: PhaseBubble, dt: number): void {
+    const alpha = this.bubbleAlpha(b);
+    this.applyBubbleAlpha(b, alpha);
+
+    // 게임: closing 진행 — alpha 0 도달 시 실제 destroy. wave 갱신 안 함.
+    if (b.closing) {
+      this.drawBubbleFrame(b);
+      this.drawBubbleDnaHelix(b, false);
+      if (alpha <= 0) this.destroyBubble(b);
+      return;
+    }
+
+    b.localTime += dt;
+    const t = b.localTime;
+    const wave = b.wave;
+
+    // 1) wave 자동 spawn
+    if (!wave.resolved) {
       while (wave.spawnQueue.length > 0 && t >= wave.nextSpawnTime) {
         const kind = wave.spawnQueue.shift()!;
         const angle = Math.random() * Math.PI * 2;
-        this.spawnVirusAt(angle, kind);
+        this.spawnVirusInBubble(b, angle, kind);
         wave.nextSpawnTime = t + WAVE_SPAWN_INTERVAL;
       }
     }
 
-    const hits = wave ? wave.hits : 0;
-    const shieldActive = this.isShieldActive();
-    this.drawDnaHelix(t, hits, shieldActive);
-    this.updateViruses(dt);
-    this.updateShieldHitEffects();
+    const shieldActive = this.isBubbleShieldActive(b);
+    this.drawBubbleFrame(b);
+    this.drawBubbleDnaHelix(b, shieldActive);
+    this.updateBubbleViruses(b);
+    this.updateBubbleShieldHitEffects(b);
 
-    // 2) wave 종결 판정 — spawn 다 됐고 + 화면에 바이러스 없음 → 결과 처리.
-    if (wave !== null && !wave.resolved && wave.spawnQueue.length === 0 && this.viruses.length === 0) {
-      this.finalizeWave();
+    // 2) wave 종결 판정
+    if (!wave.resolved && wave.spawnQueue.length === 0 && b.viruses.length === 0) {
+      this.finalizeBubbleWave(b);
     }
 
-    // 3) 결과 표시 후 WAVE_RESULT_DELAY 경과 → 자동 페이즈 1 복귀.
-    if (wave !== null && wave.resolved && t - wave.resolvedAt >= WAVE_RESULT_DELAY) {
-      this.exitInside();
+    // 3) 결과 표시 후 WAVE_RESULT_DELAY 경과 → 자동 close
+    if (wave.resolved && b.resolvedAt !== null && t - b.resolvedAt >= WAVE_RESULT_DELAY) {
+      this.closeBubble(b);
+      return;
     }
 
-    // 4) HUD — 진행 상황 + 쉴드 상태. wave 끝나면 결과 텍스트가 mutationText 에 따로 표시.
-    if (this.innerHud !== null) {
-      const fired = WAVE_TOTAL - (wave ? wave.spawnQueue.length : 0) - this.viruses.length;
-      const charges = wave ? wave.shieldCharges : 0;
-      const shieldStatus = shieldActive ? 'ON' : 'OFF';
-      this.innerHud.setText(
-        `wave: ${fired}/${WAVE_TOTAL} 처리   hits: ${hits}/${WAVE_TOTAL}   변이율: ${hits * 10}%\n` +
-        `쉴드: ${charges}/${WAVE_SHIELD_CHARGES} (${shieldStatus})  — 클릭으로 발동 (${WAVE_SHIELD_DURATION.toFixed(1)}s)`,
-      );
+    // 4) HUD — resolved 면 hudText 숨김 + resultText 강조. 진행 중이면 모드별 안내.
+    if (wave.resolved) {
+      b.hudText.setVisible(false);
+      b.resultText.setVisible(true);
+    } else {
+      b.hudText.setVisible(true);
+      b.resultText.setVisible(false);
+      const fired = WAVE_TOTAL - wave.spawnQueue.length - b.viruses.length;
+      const line1 = `wave ${fired}/${WAVE_TOTAL}  hits ${wave.hits}/${WAVE_TOTAL}  변이율 ${wave.hits * 10}%`;
+      const line2 = this.interactive
+        ? `쉴드 ${wave.shieldCharges}/${WAVE_SHIELD_CHARGES} (${shieldActive ? 'ON' : 'OFF'})  · 클릭으로 발동`
+        : `관전 모드 — 자체 면역 ${Math.round((1 - HIT_PROB_OBSERVE) * 100)}% 자동 차단`;
+      b.hudText.setText(`${line1}\n${line2}`);
     }
-
-    this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  speed: ${this.speedMultiplier}x  [INSIDE]`);
   }
 
-  // 게임: DNA 나선 placeholder. 두 strand + base pair, t 에 따라 회전.
-  //   로컬 (lx, ly) 좌표를 TILT (45°) 회전 후 (cx, cy) 로 평행이동.
-  //   DNA_SEGMENTS (10) 분할 — strand 는 세그먼트당 SUBSTEPS 개의 sub-line, base pair 는 세그먼트당 1개.
-  //   hits 만큼 인덱스 0 부터 corrupted (빨강 톤) 으로 그림.
-  //   shieldActive=true 면 strand/pair 라인 두께 ↑ (쉴드 시각 펄스).
-  private drawDnaHelix(t: number, hits: number, shieldActive: boolean): void {
-    if (!this.dnaGfx) return;
-    const cx = this.scale.width / 2;
-    const cy = this.scale.height / 2;
+  // 게임: 풍선 전체 graphics 에 alpha 적용. 페이드 인/아웃 매 프레임 호출.
+  private applyBubbleAlpha(b: PhaseBubble, alpha: number): void {
+    b.frameGfx.setAlpha(alpha);
+    b.contentsGfx.setAlpha(alpha);
+    b.virusLayer.setAlpha(alpha);
+    b.hudText.setAlpha(alpha);
+    b.resultText.setAlpha(alpha);
+  }
+
+  // 게임: 풍선 frame 그리기 — 둥근 사각형 + 외곽선 + host 까지 꼬리 line.
+  //   매 프레임 갱신 (host 위치가 움직이므로 꼬리도 따라감). Stage B 에서 꼬리 곡선 폴리싱 예정.
+  private drawBubbleFrame(b: PhaseBubble): void {
+    const half = b.size / 2;
+    const left = b.centerX - half;
+    const top = b.centerY - half;
+    b.frameGfx.clear();
+    // 게임: 배경 — 반투명 어두운 색.
+    b.frameGfx.fillStyle(BUBBLE_BG_COLOR, BUBBLE_BG_ALPHA);
+    b.frameGfx.fillRoundedRect(left, top, b.size, b.size, BUBBLE_CORNER_RADIUS);
+    // 게임: 외곽선.
+    b.frameGfx.lineStyle(BUBBLE_BORDER_WIDTH, BUBBLE_BORDER_COLOR, 1);
+    b.frameGfx.strokeRoundedRect(left, top, b.size, b.size, BUBBLE_CORNER_RADIUS);
+    // 게임: 꼬리 — 풍선 가장자리 (host 방향) → host. 단순 직선.
+    //   host 가 풍선 위/왼쪽/오른쪽/아래 어디 있든 풍선 중심에서 host 로 ray 쏴 풍선 경계 점 산출.
+    const hx = b.host.x;
+    const hy = b.host.y;
+    const edge = this.bubbleEdgePoint(b, hx, hy);
+    b.frameGfx.lineStyle(BUBBLE_TAIL_WIDTH, BUBBLE_TAIL_COLOR, BUBBLE_TAIL_ALPHA);
+    b.frameGfx.lineBetween(edge.x, edge.y, hx, hy);
+  }
+
+  // 게임: 풍선 경계에서 (tx,ty) 방향의 점 산출. 단순화 — 풍선 사각형의 변과 ray 교차.
+  //   tx,ty 가 풍선 안이면 풍선 중심 반환 (꼬리 안 그림).
+  private bubbleEdgePoint(b: PhaseBubble, tx: number, ty: number): { x: number; y: number } {
+    const half = b.size / 2;
+    const dx = tx - b.centerX;
+    const dy = ty - b.centerY;
+    if (Math.abs(dx) < half && Math.abs(dy) < half) return { x: b.centerX, y: b.centerY };
+    // 게임: ray 가 만나는 변 — 더 빨리 도달하는 축.
+    const tx_ = dx !== 0 ? half / Math.abs(dx) : Infinity;
+    const ty_ = dy !== 0 ? half / Math.abs(dy) : Infinity;
+    const tHit = Math.min(tx_, ty_);
+    return { x: b.centerX + dx * tHit, y: b.centerY + dy * tHit };
+  }
+
+  // 게임: 풍선 안 DNA 나선 — contentsGfx 는 풍선 중심 (centerX,centerY) origin.
+  //   로컬 (lx, ly) 좌표 기준. hits 만큼 corrupted, shieldActive 면 두께 ↑.
+  private drawBubbleDnaHelix(b: PhaseBubble, shieldActive: boolean): void {
+    const gfx = b.contentsGfx;
+    const t = b.localTime;
+    const hits = b.wave.hits;
     const LENGTH = 80;
     const RADIUS = 24;
     const TURNS = 2;
-    const SUBSTEPS = 6; // 세그먼트당 strand sub-line 수 (10 × 6 = 60 라인, 기존 STEPS 와 동등)
-    const SPIN = 1.5; // rad/s
-    const TILT = Math.PI / 4; // 45도
+    const SUBSTEPS = 6;
+    const SPIN = 1.5;
+    const TILT = Math.PI / 4;
     const cosT = Math.cos(TILT);
     const sinT = Math.sin(TILT);
 
-    // 게임: 색 — healthy = 녹색 톤, corrupted = 빨강 톤. 쉴드는 별도 색 변경 없이 두께만.
     const STRAND_HEALTHY = 0x88ff99;
     const STRAND_CORRUPTED = 0xff5566;
     const PAIR_HEALTHY = 0x336644;
@@ -712,16 +1412,15 @@ export class BloodScene extends Phaser.Scene {
     const strandWidth = shieldActive ? DNA_STRAND_WIDTH_SHIELD : DNA_STRAND_WIDTH;
     const pairWidth = shieldActive ? DNA_PAIR_WIDTH_SHIELD : DNA_PAIR_WIDTH;
 
-    this.dnaGfx.clear();
+    gfx.clear();
 
-    // 게임: strand — 두 가닥. 세그먼트별로 색 결정 후 SUBSTEPS 만큼 sub-line.
     for (let strand = 0; strand < 2; strand++) {
       const phaseOffset = strand * Math.PI;
       for (let seg = 0; seg < DNA_SEGMENTS; seg++) {
         const corrupted = seg < hits;
         const color = corrupted ? STRAND_CORRUPTED : STRAND_HEALTHY;
         const alpha = corrupted ? 1.0 : 0.95;
-        this.dnaGfx.lineStyle(strandWidth, color, alpha);
+        gfx.lineStyle(strandWidth, color, alpha);
         for (let s = 0; s < SUBSTEPS; s++) {
           const i0 = seg * SUBSTEPS + s;
           const i1 = i0 + 1;
@@ -734,79 +1433,67 @@ export class BloodScene extends Phaser.Scene {
           const ly0 = (u0 - 0.5) * LENGTH;
           const lx1 = Math.cos(a1) * RADIUS;
           const ly1 = (u1 - 0.5) * LENGTH;
-          const x0 = cx + lx0 * cosT - ly0 * sinT;
-          const y0 = cy + lx0 * sinT + ly0 * cosT;
-          const x1 = cx + lx1 * cosT - ly1 * sinT;
-          const y1 = cy + lx1 * sinT + ly1 * cosT;
-          this.dnaGfx.lineBetween(x0, y0, x1, y1);
+          const x0 = lx0 * cosT - ly0 * sinT;
+          const y0 = lx0 * sinT + ly0 * cosT;
+          const x1 = lx1 * cosT - ly1 * sinT;
+          const y1 = lx1 * sinT + ly1 * cosT;
+          gfx.lineBetween(x0, y0, x1, y1);
         }
       }
     }
 
-    // 게임: base pair — 세그먼트당 1개 (총 DNA_SEGMENTS 개), 가운데 위치. 세그먼트 인덱스로 색 결정.
     for (let seg = 0; seg < DNA_SEGMENTS; seg++) {
       const corrupted = seg < hits;
       const color = corrupted ? PAIR_CORRUPTED : PAIR_HEALTHY;
       const alpha = corrupted ? 0.95 : 0.7;
-      this.dnaGfx.lineStyle(pairWidth, color, alpha);
+      gfx.lineStyle(pairWidth, color, alpha);
       const u = (seg + 0.5) / DNA_SEGMENTS;
       const a = u * TURNS * Math.PI * 2 + t * SPIN;
       const lx0 = Math.cos(a) * RADIUS;
       const lx1 = Math.cos(a + Math.PI) * RADIUS;
       const ly = (u - 0.5) * LENGTH;
-      const x0 = cx + lx0 * cosT - ly * sinT;
-      const y0 = cy + lx0 * sinT + ly * cosT;
-      const x1 = cx + lx1 * cosT - ly * sinT;
-      const y1 = cy + lx1 * sinT + ly * cosT;
-      this.dnaGfx.lineBetween(x0, y0, x1, y1);
+      const x0 = lx0 * cosT - ly * sinT;
+      const y0 = lx0 * sinT + ly * cosT;
+      const x1 = lx1 * cosT - ly * sinT;
+      const y1 = lx1 * sinT + ly * cosT;
+      gfx.lineBetween(x0, y0, x1, y1);
     }
   }
 
-  // 게임: 단일 바이러스 spawn — wall 위치 (호스트 DNA evaluateRadius) → DNA 중앙 진입.
-  //   wall → screen 좌표 환산: cam1 이 host 중심에 panned 이므로 화면 중앙 = host 중심.
-  //   pattern 별 추가 파라미터는 spawn 시 무작위 결정 (Virus 타입 주석 참조).
-  private spawnVirusAt(angle: number, kind: Virus['kind']): void {
-    if (!this.hostCell) return;
-    const cx = this.scale.width / 2;
-    const cy = this.scale.height / 2;
-    const zoom = this.cameras.main.zoom;
-    const rWorld = evaluateRadius(this.hostCell.dna, angle, this.innerTime);
-    const sx = cx + Math.cos(angle) * rWorld * zoom;
-    const sy = cy + Math.sin(angle) * rWorld * zoom;
-
-    const dx = cx - sx;
-    const dy = cy - sy;
+  // 게임: 단일 바이러스 spawn — 풍선 좌표계 안. spawn 점 = 풍선 외곽 (반지름 BUBBLE_SIZE/2 - 16) 의 angle 점.
+  //   진행 방향 = 풍선 중심 (DNA 가운데). bornTime = b.localTime.
+  private spawnVirusInBubble(b: PhaseBubble, angle: number, kind: Virus['kind']): void {
+    const spawnR = b.size / 2 - 16;
+    const sx = Math.cos(angle) * spawnR;
+    const sy = Math.sin(angle) * spawnR;
+    const dx = -sx;
+    const dy = -sy;
     const len = Math.hypot(dx, dy) || 1;
     const baseDirX = dx / len;
     const baseDirY = dy / len;
 
     const gfx = this.add.graphics();
-    // 게임: 패턴별 색 약간 다르게 — 시각 식별용.
     const color = kind === 'straight' ? 0xff5577 : kind === 'zigzag' ? 0xffaa44 : 0x66ccff;
     gfx.fillStyle(color, 1);
     gfx.fillCircle(0, 0, 4);
     gfx.setPosition(sx, sy);
-    this.addToInner(gfx);
+    b.virusLayer.add(gfx);
 
-    // 게임: 모든 패턴 공통 baseline speed 랜덤 — 도달 타이밍 분산.
-    //   같은 wave 안에서도 빠른/느린 바이러스 섞여 "한꺼번에 몰리는 순간" 이 자연스럽게 생김.
     const speed = VIRUS_SPEED_MIN + Math.random() * (VIRUS_SPEED_MAX - VIRUS_SPEED_MIN);
 
-    this.viruses.push({
+    b.viruses.push({
       kind,
-      bornTime: this.innerTime,
+      bornTime: b.localTime,
       spawnX: sx,
       spawnY: sy,
       baseDirX,
       baseDirY,
       speed,
-      // zigzag 파라미터 (kind != zigzag 면 무시)
-      amplitude: 25 + Math.random() * 15,    // 25~40 px
-      frequency: 4 + Math.random() * 2,      // 4~6 rad/s
-      // curve 파라미터 (kind != curve 면 무시) — inwardSpeed 도 같은 랜덤으로 통일.
+      amplitude: 25 + Math.random() * 15,
+      frequency: 4 + Math.random() * 2,
       initialDist: len,
-      initialAngle: Math.atan2(sy - cy, sx - cx),
-      angularVelocity: (Math.random() < 0.5 ? 1 : -1) * (1 + Math.random()), // ±1~2 rad/s
+      initialAngle: Math.atan2(sy, sx),
+      angularVelocity: (Math.random() < 0.5 ? 1 : -1) * (1 + Math.random()),
       inwardSpeed: speed,
       x: sx,
       y: sy,
@@ -814,16 +1501,14 @@ export class BloodScene extends Phaser.Scene {
     });
   }
 
-  // 게임: 바이러스 위치 갱신 — parametric (innerTime 기반). 패턴별 위치 함수.
-  //   DNA 도달 시 제거 (향후 데미지 처리 자리).
-  private updateViruses(_dt: number): void {
-    const cx = this.scale.width / 2;
-    const cy = this.scale.height / 2;
-    const HIT_RADIUS = 16;
-    const t = this.innerTime;
+  // 게임: 풍선 안 바이러스 위치 갱신. 풍선 좌표계 기준. DNA 도달 (중심=0,0) 검사.
+  //   풍선 영역 밖 또는 수명 만료 시 hit 미증가로 소멸.
+  private updateBubbleViruses(b: PhaseBubble): void {
+    const t = b.localTime;
+    const half = b.size / 2;
 
-    for (let i = this.viruses.length - 1; i >= 0; i--) {
-      const v = this.viruses[i];
+    for (let i = b.viruses.length - 1; i >= 0; i--) {
+      const v = b.viruses[i];
       const tElapsed = t - v.bornTime;
 
       if (v.kind === 'straight') {
@@ -834,60 +1519,70 @@ export class BloodScene extends Phaser.Scene {
         const distAlong = v.speed * tElapsed;
         const baseX = v.spawnX + v.baseDirX * distAlong;
         const baseY = v.spawnY + v.baseDirY * distAlong;
-        // 게임: 진행 방향 90° CCW = 수직 방향. sin 으로 진동.
         const perpX = -v.baseDirY;
         const perpY = v.baseDirX;
         const off = v.amplitude * Math.sin(tElapsed * v.frequency);
         v.x = baseX + perpX * off;
         v.y = baseY + perpY * off;
       } else {
-        // 게임: curve — 중앙 기준 spiral. 거리 ↓ + 각도 ↑.
         const dist = Math.max(0, v.initialDist - v.inwardSpeed * tElapsed);
         const angle = v.initialAngle + v.angularVelocity * tElapsed;
-        v.x = cx + Math.cos(angle) * dist;
-        v.y = cy + Math.sin(angle) * dist;
+        v.x = Math.cos(angle) * dist;
+        v.y = Math.sin(angle) * dist;
       }
 
       v.gfx.setPosition(v.x, v.y);
 
-      const dx = cx - v.x;
-      const dy = cy - v.y;
-      if (dx * dx + dy * dy < HIT_RADIUS * HIT_RADIUS) {
-        const blocked = this.isShieldActive();
+      // 게임: DNA 도달 (풍선 중심) 검사.
+      //   처리 순서: (1) 쉴드 활성 → 무조건 차단. (2) hit 확률 검사 (관전 0.4, 개입 1.0).
+      //   확률 실패 = 자체 면역 차단 — 시각상 쉴드와 같은 펄스 이펙트.
+      if (v.x * v.x + v.y * v.y < VIRUS_HIT_RADIUS * VIRUS_HIT_RADIUS) {
+        const shielded = this.isBubbleShieldActive(b);
+        const hitProb = this.interactive ? HIT_PROB_INTERACTIVE : HIT_PROB_OBSERVE;
+        const success = !shielded && Math.random() < hitProb;
         const vx = v.x;
         const vy = v.y;
         v.gfx.destroy();
-        this.viruses.splice(i, 1);
-        if (this.waveState !== null && !this.waveState.resolved) {
-          if (blocked) {
-            // 게임: 쉴드 차단 — hits 미증가 + 차단 위치에 소멸 이펙트.
-            this.spawnShieldHitEffect(vx, vy);
+        b.viruses.splice(i, 1);
+        if (!b.wave.resolved) {
+          if (success) {
+            b.wave.hits++;
           } else {
-            this.waveState.hits++;
+            this.spawnBubbleShieldHitEffect(b, vx, vy);
           }
         }
+        continue;
+      }
+
+      // 게임: 풍선 밖 또는 수명 만료 — DNA 못 맞히고 지나감.
+      const outOfBounds =
+        v.x < -half - VIRUS_OUTOFBOUND_MARGIN || v.x > half + VIRUS_OUTOFBOUND_MARGIN ||
+        v.y < -half - VIRUS_OUTOFBOUND_MARGIN || v.y > half + VIRUS_OUTOFBOUND_MARGIN;
+      const expired = tElapsed > VIRUS_MAX_LIFETIME;
+      if (outOfBounds || expired) {
+        v.gfx.destroy();
+        b.viruses.splice(i, 1);
       }
     }
   }
 
-  // 게임: 쉴드 차단 위치에 작은 원 펄스 — 0.25s 동안 반지름 ↑ + alpha ↓.
-  //   updateShieldHitEffects 가 매 프레임 갱신/정리.
-  private spawnShieldHitEffect(x: number, y: number): void {
+  // 게임: 풍선 안 쉴드 차단 이펙트 spawn — 풍선 좌표계 (centerX/Y origin).
+  private spawnBubbleShieldHitEffect(b: PhaseBubble, x: number, y: number): void {
     const gfx = this.add.graphics();
     gfx.setPosition(x, y);
-    this.addToInner(gfx);
-    this.shieldHitEffects.push({ x, y, bornTime: this.innerTime, gfx });
+    b.virusLayer.add(gfx);
+    b.shieldHitEffects.push({ x, y, bornTime: b.localTime, gfx });
   }
 
-  // 게임: 쉴드 차단 이펙트 갱신 — easing 없이 선형. 만료 시 destroy + 제거.
-  private updateShieldHitEffects(): void {
-    const t = this.innerTime;
-    for (let i = this.shieldHitEffects.length - 1; i >= 0; i--) {
-      const e = this.shieldHitEffects[i];
+  // 게임: 풍선 안 쉴드 이펙트 갱신.
+  private updateBubbleShieldHitEffects(b: PhaseBubble): void {
+    const t = b.localTime;
+    for (let i = b.shieldHitEffects.length - 1; i >= 0; i--) {
+      const e = b.shieldHitEffects[i];
       const tt = (t - e.bornTime) / SHIELD_HIT_DURATION;
       if (tt >= 1) {
         e.gfx.destroy();
-        this.shieldHitEffects.splice(i, 1);
+        b.shieldHitEffects.splice(i, 1);
         continue;
       }
       const r = SHIELD_HIT_RADIUS_START + (SHIELD_HIT_RADIUS_END - SHIELD_HIT_RADIUS_START) * tt;
@@ -898,59 +1593,167 @@ export class BloodScene extends Phaser.Scene {
     }
   }
 
-  // 게임: 이펙트 일괄 정리 — exitInside / restart 시.
-  private clearShieldHitEffects(): void {
-    for (const e of this.shieldHitEffects) e.gfx.destroy();
-    this.shieldHitEffects = [];
+  // 게임: 풍선 쉴드 활성 여부.
+  private isBubbleShieldActive(b: PhaseBubble): boolean {
+    if (b.wave.resolved) return false;
+    return b.localTime < b.wave.shieldActiveUntil;
   }
 
-  private clearViruses(): void {
-    for (const v of this.viruses) v.gfx.destroy();
-    this.viruses = [];
-  }
-
-  // 게임: 쉴드 활성 여부 — innerTime 이 만료 시각 미만이면 ON.
-  //   wave 없거나 결과 표시 중이면 항상 OFF.
-  private isShieldActive(): boolean {
-    const w = this.waveState;
-    if (w === null || w.resolved) return false;
-    return this.innerTime < w.shieldActiveUntil;
-  }
-
-  // 게임: 쉴드 발동 시도 — wave 진행 중 + charges 남음 + 이미 활성 아닐 때만.
-  //   활성 중 클릭은 무시 (남은 charges 보호). 발동 시 charges-- + 만료 시각 갱신.
-  private tryActivateShield(): void {
-    const w = this.waveState;
-    if (w === null || w.resolved) return;
+  // 게임: 풍선 쉴드 발동 — 클릭으로 호출. 풍선별 charges/cooldown 독립.
+  private tryActivateBubbleShield(b: PhaseBubble): void {
+    const w = b.wave;
+    if (w.resolved) return;
     if (w.shieldCharges <= 0) return;
-    if (this.isShieldActive()) return;
+    if (this.isBubbleShieldActive(b)) return;
     w.shieldCharges--;
-    w.shieldActiveUntil = this.innerTime + WAVE_SHIELD_DURATION;
+    w.shieldActiveUntil = b.localTime + WAVE_SHIELD_DURATION;
   }
 
-  // 게임: wave 종결 처리 — pickMutation 으로 종류 결정 후 hostCell 에 적용.
-  //   결과 텍스트는 mutationText 에 표시, WAVE_RESULT_DELAY 후 updateInside 가 자동 exitInside 호출.
-  //   hits=0 (변이 없음) 도 동일하게 처리 — 정상 메시지만 띄우고 자동 복귀.
-  private finalizeWave(): void {
-    const wave = this.waveState;
-    if (wave === null || wave.resolved) return;
+  // 게임: 풍선 wave 종결 처리 — pickMutation → host 에 적용. host 사망 시 변이 적용 X.
+  //   결과 텍스트는 b.resultText 에 표시, WAVE_RESULT_DELAY 후 updateBubble 이 자동 closeBubble.
+  private finalizeBubbleWave(b: PhaseBubble): void {
+    const wave = b.wave;
+    if (wave.resolved) return;
     wave.resolved = true;
-    wave.resolvedAt = this.innerTime;
+    wave.resolvedAt = b.localTime;
+    b.resolvedAt = b.localTime;
 
     const kind = pickMutation(wave.hits);
     if (kind === null) {
-      this.mutationText?.setText(`정상 (변이 없음)\nhits 0/${WAVE_TOTAL}`);
-      console.log('[finalizeWave] hits=0 → no mutation');
+      b.resultText.setText(`정상\nhits 0/${WAVE_TOTAL}`);
+      b.resultText.setScale(0.3);
+      this.tweens.add({
+        targets: b.resultText,
+        scale: 1.0,
+        ease: 'Back.Out',
+        duration: 450,
+      });
+      console.log('[finalizeBubbleWave] hits=0 → no mutation');
       return;
     }
-    if (this.hostCell !== null && !this.hostCell.isDead()) {
-      const newDna = applyMutation(this.hostCell.dna, kind);
-      this.hostCell.setDna(newDna);
-      this.hostCell.setMutation(kind);
+    if (!b.host.isDead()) {
+      const newDna = applyMutation(b.host.dna, kind);
+      b.host.setDna(newDna);
+      b.host.setMutation(kind);
+      if (kind === 'cancer') b.host.beginCancerDivide(this.gameTime);
+      if (kind === 'corruption') b.host.beginCorruption(this.gameTime);
+      if (kind === 'hyperactive') b.host.beginHyperactive(this.gameTime);
+      if (kind === 'paralysis') b.host.beginParalysis(this.gameTime);
     }
     const info = MUTATION_INFO[kind];
-    this.mutationText?.setText(`변이 ${info.num} 발생\n${info.label}\nhits ${wave.hits}/${WAVE_TOTAL}`);
-    console.log('[finalizeWave] hits=', wave.hits, 'kind=', kind);
+    b.resultText.setText(`변이 ${info.num}: ${info.label}\nhits ${wave.hits}/${WAVE_TOTAL}`);
+    // 게임: 팝 이펙트 — scale 0.3 → 1.0 with Back.Out (overshoot). 시각 강조 + 사용자 주의 환기.
+    //   Phaser tween 사용 — real time 기준이라 speedMultiplier 영향 X (0.45s 면 빨리감기에도 무관).
+    //   Container 가 아닌 Text 의 setScale 은 origin(0.5,0.5) 기준 = 중앙 팝.
+    b.resultText.setScale(0.3);
+    this.tweens.add({
+      targets: b.resultText,
+      scale: 1.0,
+      ease: 'Back.Out',
+      duration: 450,
+    });
+    console.log('[finalizeBubbleWave] hits=', wave.hits, 'kind=', kind);
+  }
+
+  // 게임: 스테이지 wave 스케줄 — gameTime 도달한 wave 자동 spawn (Session 20).
+  //   nextWaveIndex 부터 순차 검사 (배열은 atSec 오름차순 가정).
+  private processStageWaves(t: number): void {
+    const waves = this.currentStage.bacteriaWaves;
+    const W = this.scale.width;
+    const H = this.scale.height;
+    while (this.nextWaveIndex < waves.length) {
+      const w = waves[this.nextWaveIndex];
+      if (t < w.atSec) break;
+      console.log('[stage wave]', this.nextWaveIndex, 'atSec=', w.atSec, '+bacteria=', w.bacteria, '+commander=', w.commander ?? 0);
+      for (let i = 0; i < w.bacteria; i++) {
+        const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+        const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
+        const phase = Math.random() * Math.PI * 2;
+        this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
+      }
+      for (let i = 0; i < (w.commander ?? 0); i++) {
+        const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+        const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
+        const phase = Math.random() * Math.PI * 2;
+        this.bacteriaBehavior.spawn(BACTERIA_COMMANDER, x, y, phase);
+      }
+      this.nextWaveIndex++;
+    }
+  }
+
+  // 게임: 스테이지 결과 판정 — 매 프레임 호출. 한 번 resolved 되면 무시.
+  //   1) 호중구 (NEUTROPHIL/NK/SUPER) 전멸 → 즉시 패배 (★0).
+  //   2) wave 다 처리 + 세균 0 → 시간 클리어 (★3).
+  //   3) gameTime >= timeLimit → 시간 초과. 비율로 ★2/★1/실패.
+  private checkStageResolution(t: number): void {
+    if (this.stageState !== 'running') return;
+    const stage = this.currentStage;
+    const spawned = this.bacteriaBehavior.getStageSpawned();
+    const killed = this.bacteriaBehavior.getStageKilled();
+    // 게임: 호중구 = NEUTROPHIL / NK_CELL / NEUTROPHIL_SUPER. T/B 는 보조라 전투 능력 X.
+    const liveNeutrophils = this.whiteCellBehavior.getAlive().filter((c) =>
+      c.dnaKind === 'NEUTROPHIL' || c.dnaKind === 'NK_CELL' || c.dnaKind === 'NEUTROPHIL_SUPER',
+    );
+    if (liveNeutrophils.length === 0) {
+      this.resolveStage({ kind: 'wipe', stars: 0, killed, total: spawned, elapsedSec: t });
+      return;
+    }
+    const allWavesProcessed = this.nextWaveIndex >= stage.bacteriaWaves.length;
+    const liveBacteria = this.bacteriaBehavior.getAlive().length;
+    if (allWavesProcessed && liveBacteria === 0 && spawned > 0) {
+      this.resolveStage({ kind: 'clear', stars: 3, killed, total: spawned, elapsedSec: t });
+      return;
+    }
+    if (t >= stage.timeLimit) {
+      const ratio = spawned > 0 ? Math.min(1, killed / spawned) : 0;
+      let stars: 0 | 1 | 2 = 0;
+      if (ratio >= stage.starTwoRatio) stars = 2;
+      else if (ratio >= stage.starOneRatio) stars = 1;
+      this.resolveStage({ kind: 'timeout', stars, killed, total: spawned });
+    }
+  }
+
+  // 게임: 결과 set + 모달 표시. stageState='resolved' 로 sim 정지 (update 안 분기 처리).
+  //   결과 모달 (scene.restart 시 자동 destroy) — 명시 ref 안 보유.
+  private resolveStage(result: StageResult): void {
+    this.stageState = 'resolved';
+    console.log('[stage resolved]', result);
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const starChars = result.stars >= 1 ? '★'.repeat(result.stars) + '☆'.repeat(3 - result.stars) : '실패';
+    const headline =
+      result.kind === 'clear' ? '시간 클리어!' :
+      result.kind === 'wipe'  ? '호중구 전멸' :
+      '시간 종료';
+    const body = `${headline}\n${starChars}\n잡은 세균 ${result.killed}/${result.total}\n[R] 재시작`;
+    const text = this.add.text(W / 2, H / 2, body, {
+      color: '#ffe17a',
+      fontFamily: 'ui-monospace, monospace',
+      fontSize: '28px',
+      fontStyle: 'bold',
+      align: 'center',
+      stroke: '#1a0a00',
+      strokeThickness: 5,
+      backgroundColor: '#000000aa',
+      padding: { x: 32, y: 20 },
+    });
+    text.setOrigin(0.5, 0.5);
+    text.setDepth(BUBBLE_DEPTH + 10);
+  }
+
+  // 게임: 대식세포 수동 입력 처리 — cursor 키 isDown 매 프레임 검사. 누름 시 manualUntil/Dir 갱신.
+  //   동시 누름 = dir 0 (정지). 만료는 MacrophageSystem 가 t < manualUntil 검사로 처리.
+  private applyMacrophageManualInput(t: number): void {
+    if (this.cursors === null) return;
+    const leftDown = this.cursors.left.isDown;
+    const rightDown = this.cursors.right.isDown;
+    if (!leftDown && !rightDown) return;
+    const dir = ((leftDown ? -1 : 0) + (rightDown ? 1 : 0)) as -1 | 0 | 1;
+    const until = t + MACROPHAGE_MANUAL_TIMEOUT;
+    for (const m of this.macrophageSystem.getAll()) {
+      m.manualUntil = until;
+      m.manualDirX = dir;
+    }
   }
 
   // 게임: 디버그용 호중구 스폰 — 무작위 위치, 100% hp.
@@ -958,31 +1761,54 @@ export class BloodScene extends Phaser.Scene {
     const W = this.scale.width;
     const H = this.scale.height;
     for (let i = 0; i < count; i++) {
-      const x = 100 + Math.random() * (W - 200);
-      const y = 100 + Math.random() * (H - 200);
+      const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+      const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
       const phase = Math.random() * Math.PI * 2;
       this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, phase));
     }
   }
 
+  // 게임: [B] 디버그 — 처음 2마리는 강제 infected 로 검증 편의 (Stage 11 페이즈 2 트리거).
+  //   분열 시 10% 와는 별개. 사용자 검증용.
   private spawnBacteria(count: number): void {
     const W = this.scale.width;
     const H = this.scale.height;
+    const FORCE_INFECTED_PREFIX = 2;
     for (let i = 0; i < count; i++) {
-      const x = 100 + Math.random() * (W - 200);
-      const y = 100 + Math.random() * (H - 200);
+      const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+      const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
       const phase = Math.random() * Math.PI * 2;
-      this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
+      const b = this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
+      if (i < FORCE_INFECTED_PREFIX) b.setInfected();
     }
   }
 
   // Phaser: 매 프레임 호출. delta 는 ms.
   override update(_time: number, delta: number): void {
-    // 진단: 항상 보이는 HUD — phase + cam2 + inner 상태.
+    // 진단: 항상 보이는 HUD — phase + 풍선 풀 + 인터렉션 모드.
     if (this.debugHud) {
+      const mode = this.interactive ? '개입' : '관전';
+      const prob = this.interactive ? HIT_PROB_INTERACTIVE : HIT_PROB_OBSERVE;
       this.debugHud.setText(
-        `phase=${this.phase}  cam2.visible=${this.cam2?.visible}  inner.len=${this.innerLayer?.length}  viruses=${this.viruses.length}  dnaGfx=${!!this.dnaGfx}`,
+        `phase=${this.phase}  bubbles=${this.bubbles.length}/${BUBBLE_MAX}  mode=${mode} (hit ${Math.round(prob * 100)}%)`,
       );
+    }
+
+    // 게임: 스테이지 HUD — 남은 시간 + 세균 진행. running 일 때만 표시 (cutscene/placing 중 숨김).
+    //   stage 시간 = gameTime - stageStartTime. running 진입 시점에 stageStartTime 기록 (beginNextPlacement 끝).
+    if (this.stageHudText) {
+      if (this.phase === 'running') {
+        const stageT = this.gameTime - this.stageStartTime;
+        const remain = Math.max(0, this.currentStage.timeLimit - stageT);
+        const mm = Math.floor(remain / 60).toString().padStart(2, '0');
+        const ss = Math.floor(remain % 60).toString().padStart(2, '0');
+        const killed = this.bacteriaBehavior.getStageKilled();
+        const spawned = this.bacteriaBehavior.getStageSpawned();
+        this.stageHudText.setText(`${this.currentStage.name}  ⏱ ${mm}:${ss}   세균 ${killed}/${spawned}`);
+        this.stageHudText.setVisible(true);
+      } else {
+        this.stageHudText.setVisible(false);
+      }
     }
 
     // 게임: 일시정지 — update 자체를 skip. gameTime 정지 → 모든 시각/물리 멈춤.
@@ -991,16 +1817,23 @@ export class BloodScene extends Phaser.Scene {
       return;
     }
 
-    // 게임: 줌 전환 중에는 외부/내부 sim 모두 정지 (카메라 tween 만 진행).
-    if (this.phase === 'zoomingIn' || this.phase === 'zoomingOut') {
-      this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  [${this.phase}]`);
+    // 게임: 스테이지 종료 (resolved) — sim 정지. 결과 모달만 표시. [R] 로 재시작 가능.
+    if (this.stageState === 'resolved') {
+      this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  [RESOLVED]`);
       return;
     }
 
-    // 게임: 세포 내부 phase — 외부 sim 정지, 내부 sim 만 진행.
-    if (this.phase === 'inside') {
-      this.updateInside(delta);
-      return;
+    // 게임: 컷신 진행 — 텍스트박스/단어 타이핑/click 처리.
+    //   action 진행 중 cutsceneSimActive=true 면 일반 sim 으로 fall-through (세균/호중구 자동 행동).
+    //   cutsceneSimActive=false (narration 또는 spawnNutrients) 면 sim 정지하되 영양분 렌더링은 필요.
+    if (this.phase === 'cutscene') {
+      this.updateCutscene(delta / 1000);
+      this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  [CUTSCENE]`);
+      if (!this.cutsceneSimActive) {
+        // 게임: spawnNutrients 등 sim 정지 액션 — 영양분 (별) 시각만 매 프레임 그림.
+        this.nutrientRenderer.draw(this.nutrientSystem.getAllSlots());
+        return;
+      }
     }
 
     // 게임: 가상 시간 — Phaser this.time.now 무시. dt 에 speedMultiplier 곱하여 빨리감기.
@@ -1071,8 +1904,10 @@ export class BloodScene extends Phaser.Scene {
     for (const cell of allCells) cell.update(t, dt, bounds);
 
     // 게임: 7) 대식세포 — 침전된 시체 흡수 + 점수 누적. 납작 비율 0.55 반영.
+    //   cursor 키 (← →) 매 프레임 검사 — isDown 이면 manualUntil 갱신. 자동/수동 분기는 MacrophageSystem.
     const macrophageFloorY = bounds.height - MACROPHAGE.shape.base * 0.55;
-    this.macrophageSystem.update(macrophageFloorY, dt, allCells, allBacteria);
+    this.applyMacrophageManualInput(t);
+    this.macrophageSystem.update(t, macrophageFloorY, dt, allCells, allBacteria);
 
     // 게임: 7b) 항체 시스템 — 위치 적분 + 사거리 만료 시 정지.
     //         WhiteCellBehaviorSystem 의 processBCellFiring 에서 spawn 됨.
@@ -1082,8 +1917,32 @@ export class BloodScene extends Phaser.Scene {
     //         호중구 사체 점수 ≥40 이면 슈퍼 호중구.
     this.tryProduceWhiteCell();
 
+    // 게임: infected 세균 사망 시 페이즈 2 자동 진입 트리거 검사.
+    //   cleanupAbsorbed 직전 — 시체가 풀에서 제거되기 전에 검사해야 killedByCell 사용 가능.
+    this.checkInfectedKillTrigger();
+    // 게임: corruption 호중구 소멸 시 페이즈 2 자동 진입 트리거. infected 와 동일하게 cleanupAbsorbed 직전.
+    this.checkCorruptionTrigger();
+    // 게임: hyperactive 호중구 폭발 트리거 — 반경 200px 즉사. cleanupAbsorbed 직전.
+    this.checkHyperactiveTrigger();
+    // 게임: paralysis 외부 전파 — 매 프레임. cell.update 직후 처리해야 paralyzed 효과 즉시 반영.
+    this.checkParalysisPropagation(t);
+
     // 게임: 9) 흡수된 시체 정리 — 풀에서 제거 + 그래픽 핸들 destroy.
     this.cleanupAbsorbed();
+
+    // 게임: 9a) 스테이지 — 세균 사망 카운트 갱신 + wave 자동 spawn + 결과 판정.
+    //   placement / cutscene 단계는 stage 진행 X. running 일 때만 stage logic 호출.
+    //   stage 시간 = gameTime - stageStartTime (cutscene 중 gameTime 진행되므로).
+    this.bacteriaBehavior.pollKilled();
+    if (this.phase === 'running') {
+      const stageT = this.gameTime - this.stageStartTime;
+      this.processStageWaves(stageT);
+      this.checkStageResolution(stageT);
+    }
+
+    // 게임: 9b) 페이즈 2 풍선 갱신 — 외부 sim 과 동시. host 사망 시 자동 close.
+    //   cleanupAbsorbed 후 호출 — host 가 isAbsorbed=true 면 isDead()=true 로 closeBubble.
+    this.updateBubbles(dt);
 
     // 게임: 9) 시각화
     this.nutrientRenderer.draw(this.nutrientSystem.getAllSlots());

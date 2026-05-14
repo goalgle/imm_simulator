@@ -5,6 +5,7 @@
 import type { DNA } from '../domain/dna';
 import type { CellRenderer } from '../render/CellRenderer';
 import { LivingCell, type Bounds } from './LivingCell';
+import type { WhiteCell } from './WhiteCell';
 
 export type MitosisState = {
   startTime: number;
@@ -26,6 +27,16 @@ export class Bacteria extends LivingCell {
   private totalAbsorbed = 0;
   currentVisionRange: number;
   currentCommandRange: number;
+  // 게임: 바이러스 보유 세균 (페이즈 2 트리거). 분열 시 10% 확률 setInfected.
+  //   호중구가 죽이면 BloodScene 가 그 호중구 안에서 페이즈 2 자동 진입.
+  //   분열 안 함 (자식 색이 부모 색을 상속하면 시각 혼란 — 정책상 차단).
+  isInfected = false;
+  // 게임: 마지막으로 데미지를 가해 죽인 호중구 reference. infected 만 ContactSystem 이 기록.
+  //   BloodScene 가 매 프레임 검사 → 호중구 살아있으면 페이즈 2 진입 후 null.
+  killedByCell: WhiteCell | null = null;
+  // 게임: 스테이지 killed 카운터 중복 방지 (Session 20). isDead 처음 도달 시 BacteriaBehaviorSystem 가
+  //   stageKilled++ + 이 flag=true. 다음 프레임 같은 세균 isDead 재검사 시 무시.
+  wasCountedAsKilled = false;
 
   constructor(
     dna: DNA,
@@ -60,6 +71,15 @@ export class Bacteria extends LivingCell {
     return this.dna.shape.base + ABSORB_RADIUS_BONUS;
   }
 
+  // 게임: 바이러스 보유 표시. dna 인스턴스 색만 변형 — 다른 세균엔 영향 X.
+  //   보라 톤 (h=270, s=60) 으로 식별. 한 번만 적용 (중복 호출 무시).
+  setInfected(): void {
+    if (this.isInfected) return;
+    this.isInfected = true;
+    this.dna.color.h = 270;
+    this.dna.color.s = 60;
+  }
+
   // 게임: 영양분 흡수 (또는 호중구 처치 보상). 종족별 분기.
   registerAbsorb(t: number): void {
     if (this.isDead()) return;
@@ -75,8 +95,9 @@ export class Bacteria extends LivingCell {
       }
     } else {
       // 게임: 일반 세균 — 분열 카운터.
+      //   infected 세균은 분열 X (자식이 부모 보라색 dna 를 상속하면 시각 혼란 회피).
       this.absorbCounter++;
-      if (this.absorbCounter >= MITOSIS_THRESHOLD && this.mitosis === null) {
+      if (this.absorbCounter >= MITOSIS_THRESHOLD && this.mitosis === null && !this.isInfected) {
         this.mitosis = { startTime: t, duration: MITOSIS_DURATION };
       }
     }

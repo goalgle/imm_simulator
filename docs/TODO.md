@@ -6,9 +6,9 @@
 
 ---
 
-## 현재 상태 한 줄 (Session 17 종료 시점)
+## 현재 상태 한 줄 (Session 20 종료 시점)
 
-페이즈 2 한 사이클 동작 (자동 wave 10발 + 단일 쉴드 5 charges + 변이 적용 + 페이즈 1 호중구 변형). 변이 6종의 시각/속도/색은 자동 반영되지만 **변이별 행동 메커니즘 (정지/낙하/분열/scale/폭발/마비 timer 등) 은 미구현** — Stage 11~15 예정.
+스테이지 시스템 (Session 20) — StageConfig 타입 + STAGE_1 (3분, 호중구 10/세균 3+커맨더 1, wave 60s/120s 에 +5). 시간 클리어 ★★★, 시간 초과 ★★/★, 호중구 전멸 실패. 카운트다운 HUD + 결과 모달. 대식세포 수동 조작 ← → (Session 19). 변이 6종 시스템 분기 (Stage 11~15) + 풍선 페이즈 2 (Session 18) + 관전/개입 모드 (Session 19).
 
 ---
 
@@ -113,19 +113,19 @@
 - [ ] 분열 timer (6s) → 좌우 새 암세포 spawn (양쪽 임펄스)
 - [ ] MacrophageSystem: 좌우 이동 경로에 암세포 충돌 → 정지 / 우회
 
-#### Stage 13 — 붕괴
-- [ ] WhiteCell corruption 모드 — 매 프레임 scale 점감 (5s, 1→0)
-- [ ] scale 0 도달 시 자기 소멸 + BloodScene 에 페이즈 2 자동 진입 시그널 (다른 호중구 호스트로)
+#### Stage 13 — 붕괴 ✅
+- [x] WhiteCell corruption 모드 — 매 프레임 scale 점감 (5s, 1→0)
+- [x] scale 0 도달 시 자기 소멸 + BloodScene 에 페이즈 2 자동 진입 시그널 (다른 호중구 호스트로)
 
-#### Stage 14 — 과민
-- [ ] WhiteCell hyperactive 모드 — 매 프레임 scale 점증 (4s, 1→2.5)
-- [ ] 임계 도달 시 폭발: 반경 200px 내 살아있는 호중구/세균 즉사 + 본인 소멸
-- [ ] BloodScene 에 영역 데미지 헬퍼 (모든 LivingCell 거리 검사 → 즉사)
+#### Stage 14 — 과민 ✅
+- [x] WhiteCell hyperactive 모드 — 매 프레임 scale 점증 (4s, 1→2.5)
+- [x] 임계 도달 시 폭발: 반경 200px 내 살아있는 호중구/세균 즉사 + 본인 소멸
+- [x] BloodScene.checkHyperactiveTrigger — pendingHyperactiveExplosion 검사 + 영역 데미지
 
-#### Stage 15 — 마비
-- [ ] WhiteCell paralysis 모드 — 3s 주기 0.5s 마비 timer
-- [ ] WhiteCellBehaviorSystem: paralyzed 면 입력 무시 (정지)
-- [ ] 마비 활성 시 인접 60px 호중구에 paralyzed timer 갱신 (전파)
+#### Stage 15 — 마비 ✅
+- [x] WhiteCell paralysis 모드 — 3s 주기 0.5s 마비 timer (isParalyzed)
+- [x] WhiteCell.updateAlive: paralyzed 면 vx/vy=0 강제 (BehaviorSystem 의 desired 가 매 프레임 덮여도 정지)
+- [x] BloodScene.checkParalysisPropagation — 인접 60px 정상 호중구 paralyzedUntil 갱신 (1단계 전파)
 
 ### 풀 경로 추가 항목
 

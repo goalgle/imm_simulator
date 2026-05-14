@@ -129,7 +129,7 @@ export type Armament = {
 export const NEUTROPHIL: DNA = {
   kind: 'NEUTROPHIL',
   shape: {
-    base: 32,                          // 큰 편 — 세균(18) 보다 시각 우위
+    base: 16,                          // 호중구 (Session 20: 32→16 1/2 축소 — 모바일 portrait 검수용)
     w1: { A: 0.30, n: 4, omega: 2.5 }, // 4 돌기, 큰 출렁임
     w2: { A: 0.20, n: 6, omega: 3.0 }, // 6 돌기, 중간 떨림
     w3: { A: 0.10, n: 8, omega: 3.5 }, // 8 돌기, 미세 떨림
@@ -176,21 +176,21 @@ export const NEUTROPHIL: DNA = {
 
 // 게임: NK 세포 (Natural Killer) 프리셋. M7 — 대식세포가 1/10 확률로 생산.
 //   특징:
-//     - 작은 체구 (base 22) — 일반 호중구(32)보다 작음
+//     - 작은 체구 (base 26) — 일반 호중구(32)보다 약간 작음
 //     - 강한 공격력 (attack 35), 빠름 (speed 30, turnRate 3.0)
 //     - HP 가 줄어도 속도 유지 (minSpeedRatio 1.0)
 //     - 커맨더 우선 추적 (seekCommander 1.5), 일반 세균은 회피하며 우회 (avoidWorker 0.4/80)
 //     - 커맨더 없으면 일반 세균 fallback (seekPrey 0.7)
-//   색상: 진한 청보라 — 슈퍼 호중구(분홍 보라) 와 명확히 구분.
+//   색상: 다크 인디고 — infected 세균(보라 h=270) 및 BCELL/SUPER 보라 계열과 분리 (Session 17).
 export const NK_CELL: DNA = {
   kind: 'NK_CELL',
   shape: {
-    base: 22,                          // 작음 (호중구 32 의 ~70%)
+    base: 13,                          // NK (Session 20: 26→13 1/2 축소)
     w1: { A: 0.35, n: 5, omega: 4.0 }, // 5 돌기, 빠른 떨림
     w2: { A: 0.25, n: 7, omega: 5.0 },
     w3: { A: 0.15, n: 9, omega: 6.0 },
   },
-  color: { h: 260, s: 55, l: 45 },     // 진한 청보라
+  color: { h: 240, s: 70, l: 25 },     // 다크 인디고 (Session 17: 청보라 260,55,45 → 인디고)
   behavior: {
     target: 1.0,
     speed: 30,                         // 호중구(15) 의 두 배
@@ -238,7 +238,7 @@ export const NK_CELL: DNA = {
 export const BCELL: DNA = {
   kind: 'BCELL',
   shape: {
-    base: 20,                          // 작음
+    base: 10,                          // BCELL (Session 20: 20→10 1/2)
     w1: { A: 0.20, n: 2, omega: 1.0 }, // 2 돌기 — 거의 원형
     w2: { A: 0.15, n: 3, omega: 1.5 },
     w3: { A: 0.10, n: 4, omega: 2.0 },
@@ -300,7 +300,7 @@ export const BCELL: DNA = {
 export const TCELL: DNA = {
   kind: 'TCELL',
   shape: {
-    base: 24,                          // 호중구(32) 보다 작음, NK(22) 보다 약간 큼
+    base: 12,                          // TCELL (Session 20: 24→12 1/2)
     w1: { A: 0.25, n: 3, omega: 3.5 },
     w2: { A: 0.15, n: 5, omega: 4.0 },
     w3: { A: 0.10, n: 7, omega: 4.5 },
@@ -351,7 +351,7 @@ export const TCELL: DNA = {
 export const NEUTROPHIL_SUPER: DNA = {
   kind: 'NEUTROPHIL_SUPER',
   shape: {
-    base: 40,                          // 가장 큼 — 호중구(32) ×1.25
+    base: 20,                          // 슈퍼 호중구 (Session 20: 40→20 1/2)
     w1: { A: 0.30, n: 4, omega: 2.5 }, // 일반 호중구와 동일 wave 형태
     w2: { A: 0.20, n: 6, omega: 3.0 },
     w3: { A: 0.10, n: 8, omega: 3.5 },
@@ -404,7 +404,7 @@ export const NEUTROPHIL_SUPER: DNA = {
 export const BACTERIA_A: DNA = {
   kind: 'BACTERIA_A',
   shape: {
-    base: 18,                          // 작음 (호중구 32 보다 작음)
+    base: 9,                           // 세균 (Session 20: 18→9 1/2)
     w1: { A: 0.20, n: 5, omega: 1.5 }, // 5 돌기 — 호중구(4) 보다 불규칙
     w2: { A: 0.15, n: 7, omega: 2.0 },
     w3: { A: 0.10, n: 9, omega: 2.5 },
@@ -456,7 +456,7 @@ export const BACTERIA_A: DNA = {
 export const BACTERIA_COMMANDER: DNA = {
   kind: 'BACTERIA_COMMANDER',
   shape: {
-    base: 20,                          // 일반 세균(18) 보다 약간만 큼.
+    base: 10,                          // 세균 커맨더 (Session 20: 20→10 1/2)
     w1: { A: 0.18, n: 5, omega: 1.2 },
     w2: { A: 0.12, n: 7, omega: 1.6 },
     w3: { A: 0.08, n: 9, omega: 2.0 },
@@ -514,7 +514,7 @@ export const MACROPHAGE: DNA = {
   // 게임: 작고 납작 — base 25 + Macrophage.update 가 setScale(1.0, 0.55) 로 Y 압축.
   //        외곽이 더 불규칙 (A 큼 + n 다양) → 둥근 공보다 "기어다니는" 모호한 형태.
   shape: {
-    base: 25,                          // 시각상 setScale(1, 0.55) 후 납작
+    base: 13,                          // 대식세포 (Session 20: 25→13 1/2). 시각상 setScale(1,0.55) 납작
     w1: { A: 0.25, n: 3, omega: 0.5 }, // 큰 출렁임, 느린 변형
     w2: { A: 0.18, n: 5, omega: 0.8 },
     w3: { A: 0.10, n: 8, omega: 1.0 },

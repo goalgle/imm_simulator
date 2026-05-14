@@ -19,6 +19,10 @@ import { applyDriveLerp } from './behaviorHelpers';
 // 게임: 분열 시 자식 위치 오프셋 (px). 부모와 약간 떨어져 시작.
 const SPAWN_OFFSET = 12;
 
+// 게임: 분열 자식이 바이러스 보유 (infected) 가 될 확률. 페이즈 2 트리거 빈도 결정.
+//   사용자 안 — 0.1 (10%). 부모 isInfected 와 무관, 매 자식마다 독립 주사위.
+const INFECTED_CHILD_CHANCE = 0.1;
+
 // 게임: 공격 모드일 때 멤버/커맨더가 사용하는 임시 drives.
 //   - avoidPredator weight ↓ (회피 중단)
 //   - seekPrey weight ↑ (호중구 추격)
@@ -37,8 +41,34 @@ const AGGRESSIVE_DRIVES: Drives = {
 
 export class BacteriaBehaviorSystem {
   private bacteria: Bacteria[] = [];
+  // 게임: 스테이지 spawn/killed 카운터 (Session 20). spawn() 호출마다 stageSpawned++,
+  //   매 프레임 사망 감지 (isDead && !wasCountedAsKilled) 시 stageKilled++.
+  //   BloodScene 가 stage restart 시 resetStageCounters() 로 초기화.
+  private stageSpawned = 0;
+  private stageKilled = 0;
+  // 게임: 컷신 (Session 21) — true 면 모든 세균 vx/vy=0 강제 + 행동 logic skip. 컷신 spawnNeutrophils 액션 동안 set.
+  frozen = false;
 
   constructor(private readonly renderer: CellRenderer) {}
+
+  resetStageCounters(): void {
+    this.stageSpawned = 0;
+    this.stageKilled = 0;
+  }
+
+  getStageSpawned(): number { return this.stageSpawned; }
+  getStageKilled(): number { return this.stageKilled; }
+
+  // 게임: 매 프레임 사망 감지 — BloodScene 가 update() 끝에 호출. 분열로 새로 spawn 된 자식도
+  //   isDead 되면 카운트. 시작/wave/분열 모두 spawn() 호출 시 stageSpawned++.
+  pollKilled(): void {
+    for (const b of this.bacteria) {
+      if (b.wasCountedAsKilled) continue;
+      if (!b.isDead()) continue;
+      b.wasCountedAsKilled = true;
+      this.stageKilled++;
+    }
+  }
 
   add(bacteria: Bacteria): void {
     this.bacteria.push(bacteria);
@@ -54,10 +84,12 @@ export class BacteriaBehaviorSystem {
     this.bacteria = remain;
   }
 
-  // 게임: 외부(BloodScene)가 초기 세균을 생성할 때 사용.
+  // 게임: 외부(BloodScene)가 초기/wave/분열 세균을 생성할 때 사용.
+  //   매 호출 stageSpawned++ — 별 평가 분모에 사용. 분열도 카운트되어 무한 증식 막을 동기 부여.
   spawn(dna: DNA, x: number, y: number, phase = 0, initialHp?: number): Bacteria {
     const b = new BacteriaCtor(dna, this.renderer, x, y, phase, initialHp);
     this.add(b);
+    this.stageSpawned++;
     return b;
   }
 
@@ -86,6 +118,13 @@ export class BacteriaBehaviorSystem {
     for (const b of this.bacteria) {
       // 게임: 시체는 자체 update 가 낙하만 처리. 행동/흡수 모두 정지.
       if (b.isDead()) {
+        b.update(t, dt, bounds);
+        continue;
+      }
+      // 게임: 컷신 frozen — vx/vy 0 강제 + 행동 결정 skip. 떨림만 유지 (cell.update 호출).
+      if (this.frozen) {
+        b.vx = 0;
+        b.vy = 0;
         b.update(t, dt, bounds);
         continue;
       }
@@ -192,6 +231,8 @@ export class BacteriaBehaviorSystem {
     }
 
     // 게임: 분열 완료된 세균의 자식 생성 (별도 루프 — 반복 중 push 회피).
+    //   infected 부모는 분열 안 함 (Bacteria.updateAlive 에서 mitosis 시작 차단).
+    //   자식은 부모 dna 상속 (정상 색) + 독립 10% 확률로 infected — 매번 새 주사위.
     const newborns: Bacteria[] = [];
     for (const b of this.bacteria) {
       if (b.pendingSpawn) {
@@ -199,11 +240,16 @@ export class BacteriaBehaviorSystem {
         const angle = Math.random() * Math.PI * 2;
         const childX = b.x + Math.cos(angle) * SPAWN_OFFSET;
         const childY = b.y + Math.sin(angle) * SPAWN_OFFSET;
-        newborns.push(
-          new BacteriaCtor(b.dna, this.renderer, childX, childY, Math.random() * Math.PI * 2),
-        );
+        const child = new BacteriaCtor(b.dna, this.renderer, childX, childY, Math.random() * Math.PI * 2);
+        if (Math.random() < INFECTED_CHILD_CHANCE) child.setInfected();
+        newborns.push(child);
       }
     }
-    for (const child of newborns) this.add(child);
+    // 게임: 분열 자식도 stageSpawned 카운트 — 사용자가 처리해야 할 세균 수에 포함 (Session 20).
+    //   killed/total 표시 = killed/spawned. 분열 안 잡으면 분모만 늘어남 → 시간 클리어 어려워짐.
+    for (const child of newborns) {
+      this.add(child);
+      this.stageSpawned++;
+    }
   }
 }

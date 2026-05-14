@@ -5,7 +5,7 @@ import Phaser from 'phaser';
 import type { Nutrient } from '../entities/Nutrient';
 
 // 게임: 시각 파라미터.
-const NUTRIENT_RADIUS = 3;            // 점의 반지름 (px)
+const NUTRIENT_RADIUS = 3;            // 점의 반지름 (px). 원래 값.
 const NUTRIENT_COLOR = 0xfff4b8;      // 연한 노란빛 (영양 느낌)
 const NUTRIENT_ALPHA = 0.85;
 

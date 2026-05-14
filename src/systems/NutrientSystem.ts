@@ -94,4 +94,43 @@ export class NutrientSystem {
   get(index: number): Nutrient | undefined {
     return this.nutrients[index];
   }
+
+  // 게임: 컷신 (Session 21) — 모든 슬롯 비활성 + 부활 무한 지연 (외부에서 명시적으로 enableAll 호출 전까지).
+  //   컷신 시작 시 호출. 게임 본 영양분이 컷신 화면에 보이지 않도록.
+  disableAll(): void {
+    for (const n of this.nutrients) {
+      n.active = false;
+      n.respawnAt = Number.MAX_SAFE_INTEGER;
+    }
+  }
+
+  // 게임: 컷신 (Session 21) — 모든 슬롯 즉시 활성화 + 새 무작위 위치. 컷신 종료 후 정상 진행 진입 시 호출.
+  enableAll(): void {
+    for (const n of this.nutrients) {
+      const fresh = this.makeFreshNutrient();
+      n.x = fresh.x;
+      n.y = fresh.y;
+      n.active = true;
+      n.respawnAt = 0;
+    }
+  }
+
+  // 게임: 컷신 (Session 21) — 특정 슬롯을 지정 위치에 활성화. 컷신 spawnNutrients 액션 사용.
+  //   슬롯 부족 시 false. 성공 시 true.
+  spawnAt(index: number, x: number, y: number): boolean {
+    const n = this.nutrients[index];
+    if (!n) return false;
+    n.x = x;
+    n.y = y;
+    n.active = true;
+    n.respawnAt = 0;
+    return true;
+  }
+
+  // 게임: 컷신 (Session 21) — 활성 영양분 수. 'spawnBacteria' ACTION 종료 조건 (모두 흡수) 검사용.
+  getActiveCount(): number {
+    let c = 0;
+    for (const n of this.nutrients) if (n.active) c++;
+    return c;
+  }
 }

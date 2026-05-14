@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "immune_simulator_기획서.md",
+                "file": "TODO.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "immune_simulator_기획서"
+              "title": "TODO"
             }
           }
         ]
@@ -183,8 +183,15 @@
       "bases:새 베이스 생성하기": false
     }
   },
-  "active": "e2990b4c2ce0b892",
+  "active": "57245141f9e6499a",
   "lastOpenFiles": [
+    "README.md",
+    "컨셉.md",
+    "시스템.md",
+    "세션_로그.md",
+    "변이.md",
+    "마일스톤.md",
+    "TODO.md",
     "페이즈2_TODO.md",
     "시스템_구현_기획서.md"
   ]

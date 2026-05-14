@@ -42,10 +42,11 @@ describe('mutationZombie', () => {
     expect(m.color.s).toBe(40);
   });
 
-  it('w1/w2 omega 60% 로 감소', () => {
+  it('w1/w2 omega 60% 로 감소 + 이동 속도 60% 로 감소', () => {
     const m = mutationZombie(NEUTROPHIL);
     expect(m.shape.w1.omega).toBeCloseTo(NEUTROPHIL.shape.w1.omega * 0.6);
     expect(m.shape.w2.omega).toBeCloseTo(NEUTROPHIL.shape.w2.omega * 0.6);
+    expect(m.behavior.speed).toBeCloseTo(NEUTROPHIL.behavior.speed * 0.6);
   });
 
   it('원본 dna 변형 안 됨', () => {
@@ -127,7 +128,7 @@ describe('mutationParalysis', () => {
 
 describe('mutationChaos', () => {
   // 게임: deterministic random 으로 검증.
-  it('주어진 random 값에 따라 모든 형질 랜덤화', () => {
+  it('주어진 random 값에 따라 모든 형질 랜덤화 + 속도 ×2', () => {
     const seq = [0, 0.5, 0.99, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7];
     let i = 0;
     const random = () => seq[i++ % seq.length];
@@ -147,6 +148,8 @@ describe('mutationChaos', () => {
     // color.s 50~100
     expect(m.color.s).toBeGreaterThanOrEqual(50);
     expect(m.color.s).toBeLessThanOrEqual(100);
+    // 속도 ×2
+    expect(m.behavior.speed).toBeCloseTo(NEUTROPHIL.behavior.speed * 2);
   });
 
   it('원본 dna 변형 안 됨', () => {

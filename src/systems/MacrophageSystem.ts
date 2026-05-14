@@ -22,6 +22,16 @@ const SCORE_WHITECELL_CORPSE = 20;
 //        시체가 작아져서(MIN_SCALE=0.5) 닿기 어려우므로 여유 padding.
 const ABSORB_PADDING = 8;
 
+// 게임: cancer 호중구 충돌 정지 padding (Stage 12).
+//   대식세포 base + cancer base + 이 padding 안에 들어오면 정지 + 천천히 분해.
+//   cancer hp=0 도달 시 시체 → 다음 프레임 대식세포가 흡수 (기존 시체 흡수 시스템).
+const CANCER_BLOCK_PADDING = 4;
+// 게임: cancer 분해 DPS — 대식세포 공격력. 호중구 ×20 의 1/2 정도로 천천히.
+//   maxHp 100 기준 약 10s 분해. 사용자 안 "공격력 최소 — 부딪치다 보면 결국 없앤다".
+const CANCER_DECOMPOSE_DPS = 10;
+// 게임: cancer 분해 시 시각 자극 (combat 채널) — 대식세포 접촉 중임을 cancer 가 빨강쪽으로 표시.
+const CANCER_DECOMPOSE_STIMULUS = 2.0;
+
 // 게임: 가장 가까운 시체가 흡수 거리에 들어왔을 때 멈춤. 너무 멀면 그쪽으로 이동.
 //        |vx| 가 0 이 되도록 부드러운 감쇠는 단순화 — 즉시 set.
 
@@ -49,10 +59,12 @@ export class MacrophageSystem {
   }
 
   // 게임: 매 프레임 호출. 시체 풀은 BloodScene 이 모아서 전달.
+  //   t          : gameTime (Macrophage.manualUntil 만료 비교용 — Session 19)
   //   floorY     : 화면 바닥 Y (대식세포 Y 강제용)
   //   whiteCells : 호중구 풀 (시체 포함)
   //   bacteria   : 세균 풀 (시체 포함)
   update(
+    t: number,
     floorY: number,
     dt: number,
     whiteCells: readonly WhiteCell[],
@@ -80,24 +92,56 @@ export class MacrophageSystem {
         }
       }
 
-      if (nearest === null) {
+      // 게임: 시체 흡수 처리 — 자동/수동 공통. nearest 가 흡수 거리 안이면 즉시 흡수.
+      const speed = m.dna.behavior.speed;
+      const absorbDist = m.dna.shape.base + ABSORB_PADDING;
+      const absorbing = nearest !== null && bestDx <= absorbDist;
+      if (absorbing) {
+        nearest!.entity.isAbsorbed = true;
+        if (nearest!.isWhite) {
+          this.totalScore += SCORE_WHITECELL_CORPSE;
+          this.whiteCellScoreInPool += SCORE_WHITECELL_CORPSE;
+        } else {
+          this.totalScore += SCORE_BACTERIA_CORPSE;
+        }
+      }
+
+      // 게임: vx 결정 — 수동 모드 (t < manualUntil) 면 사용자 입력 방향, 아니면 nearest 추적.
+      //   수동 모드 동안에도 흡수는 적용 (사용자가 시체 위로 가면 자연스럽게 처리).
+      const manual = t < m.manualUntil;
+      if (manual) {
+        m.vx = m.manualDirX * speed;
+      } else if (nearest === null || absorbing) {
         m.vx = 0;
       } else {
-        const speed = m.dna.behavior.speed;
-        const absorbDist = m.dna.shape.base + ABSORB_PADDING;
-        if (bestDx <= absorbDist) {
-          // 게임: 흡수.
-          nearest.entity.isAbsorbed = true;
-          if (nearest.isWhite) {
-            this.totalScore += SCORE_WHITECELL_CORPSE;
-            this.whiteCellScoreInPool += SCORE_WHITECELL_CORPSE;
-          } else {
-            this.totalScore += SCORE_BACTERIA_CORPSE;
+        m.vx = nearest!.x > m.x ? speed : -speed;
+      }
+
+      // 게임: cancer 호중구 충돌 (Stage 12) — 진로상 cancer 만나면 정지 + 천천히 분해.
+      //   대식세포 진행 방향 (vx 부호) 으로 cancer 가 base 합 + padding 안에 있으면:
+      //     1) vx=0 (장애물처럼 멈춤)
+      //     2) 매 프레임 데미지 누적 → cancer hp 0 도달 시 시체 → 다음 프레임 흡수
+      //   여러 cancer 가 진로상이면 가장 가까운 것 1개만 분해 (대식세포가 1개씩 처리).
+      if (m.vx !== 0) {
+        const blockDist = m.dna.shape.base + CANCER_BLOCK_PADDING;
+        let blockTarget: WhiteCell | null = null;
+        let blockTargetDist = Infinity;
+        for (const w of whiteCells) {
+          if (w.isDead() || w.isAbsorbed) continue;
+          if (w.mutation !== 'cancer') continue;
+          const dx = w.x - m.x;
+          if ((m.vx > 0 && dx <= 0) || (m.vx < 0 && dx >= 0)) continue;
+          const adx = Math.abs(dx);
+          if (adx > blockDist + w.dna.shape.base) continue;
+          if (adx < blockTargetDist) {
+            blockTargetDist = adx;
+            blockTarget = w;
           }
+        }
+        if (blockTarget !== null) {
           m.vx = 0;
-        } else {
-          // 게임: 시체 쪽으로 X 방향 이동.
-          m.vx = nearest.x > m.x ? speed : -speed;
+          blockTarget.applyDamage(CANCER_DECOMPOSE_DPS * dt);
+          blockTarget.applyCombatStimulus(CANCER_DECOMPOSE_STIMULUS * dt);
         }
       }
 

@@ -29,14 +29,15 @@ export type MutationKind =
   | 'chaos';       // 변이 6 — 공격력 ×3, 호중구/세균 무차별 공격, 모든 형질 랜덤
 
 // 게임: 변이 1 — 좀비.
-//   dna 변경: target=-1 (drives 가 동족 호중구를 prey 로 인식), 녹색 (식별), 떨림 ↓.
-//   시스템 분기 (Stage 11 예정):
-//     - ContactSystem: 호중구↔호중구 페어 검사 추가, mutation==='zombie' 면 호중구 vs 공격력 ×2
-//     - WhiteCellBehaviorSystem: zombie 호중구는 fusion 후보에서 제외, prey 후보 = 살아있는 호중구
+//   dna 변경: target=-1 (drives 가 동족 호중구를 prey 로 인식), 녹색 (식별), 떨림 ↓, 이동 속도 ↓.
+//   시스템 분기 (Stage 11):
+//     - ContactSystem: 호중구↔호중구 페어 검사, zombie 공격력 ×2 (호중구 vs). 양쪽 데미지 (싸우면 받음).
+//     - WhiteCellBehaviorSystem: zombie 호중구는 fusion 후보에서 제외, prey 후보 = 살아있는 백혈구
 //     - 세균과 접촉 시는 일반 호중구와 동일 (정상 데미지)
 export function mutationZombie(dna: DNA): DNA {
   const m = cloneDna(dna);
   m.behavior.target = -1.0;
+  m.behavior.speed *= 0.6;
   m.color.h = 120;
   m.color.s = 40;
   m.shape.w1.omega *= 0.6;
@@ -102,10 +103,10 @@ export function mutationParalysis(dna: DNA): DNA {
 }
 
 // 게임: 변이 6 — 카오스.
-//   dna 변경: 모든 형질 랜덤화. random 함수 인자로 받음 (테스트 deterministic).
-//   시스템 분기 (Stage 11 통합 예정 — 좀비 분기 재사용):
+//   dna 변경: 모든 형질 랜덤화 + 이동 속도 ×2. random 함수 인자로 받음 (테스트 deterministic).
+//   시스템 분기 (Stage 11):
 //     - ContactSystem: mutation==='chaos' 면 호중구↔호중구 + 호중구↔세균 모두 공격, 데미지 ×3
-//     - drives prey 후보 = 모든 살아있는 LivingCell (자기 제외)
+//     - WhiteCellBehaviorSystem: prey 후보 = 호중구 + 세균 중 가까운 것
 export function mutationChaos(dna: DNA, random: () => number = Math.random): DNA {
   const m = cloneDna(dna);
   // shape.n 랜덤 2~15
@@ -118,6 +119,8 @@ export function mutationChaos(dna: DNA, random: () => number = Math.random): DNA
   m.shape.w3.omega = 0.5 + random() * 4.5;
   // behavior.target 랜덤 -1~1
   m.behavior.target = random() * 2 - 1;
+  // 게임: 이동 속도 ×2 — 좀비(×0.6) 와 대비되는 빠른 무차별 공격자.
+  m.behavior.speed *= 2.0;
   // color 랜덤
   m.color.h = random() * 360;
   m.color.s = 50 + random() * 50;

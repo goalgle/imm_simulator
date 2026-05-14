@@ -38,10 +38,12 @@ const SHOCK_AMP_BOOST = 0.5;
 
 // 게임: 전투 활성도 1 일 때. shock 와 다른 채널이라 합성 가능.
 //   combat 은 hue 를 빨강 쪽으로 lerp 시켜 "다른 색"으로 보이게 함.
+//   진폭/떨림 속도도 같이 ↑ 시켜 "격렬한 형태" 시각 (Session 17 — 색만으로는 약함).
 const COMBAT_TARGET_HUE = 0;       // 빨강
 const COMBAT_HUE_PULL = 0.6;       // 활성도 1 일 때 base hue → COMBAT_TARGET_HUE 까지 60% lerp
 const COMBAT_S_BOOST = 20;         // 빨강쪽이라도 채도 살짝 ↑
-const COMBAT_AMP_BOOST = 0.4;      // shock 와 별개 ampBoost 추가
+const COMBAT_AMP_BOOST = 1;      // 활성도 1 시 ampBoost +1.5 (총 2.5배 진폭) — 형태 격렬
+const COMBAT_OMEGA_BOOST = 0.2;    // 활성도 1 시 omegaBoost +1.5 (총 2.5배 떨림 속도) — 빠른 출렁임
 
 // 게임: 죽으면 색 잃음. life=0 → 채도 0. (명도는 유지하여 "회색 시체" 시각).
 //        형태 떨림도 0 → 정적 시체.
@@ -198,7 +200,11 @@ class GraphicsHandle implements CellRenderHandle {
     // 게임: 진폭 — 평소 1, 자극으로 ↑, 죽으면 0 (정적 시체).
     const ampBoost = (1 + SHOCK_AMP_BOOST * shock + COMBAT_AMP_BOOST * combat) * life;
 
-    generatePolygon(this.dna, t, VERTEX_COUNT, this.phase, ampBoost, this.buffer);
+    // 게임: 떨림 속도 — combat 시 가속 (같은 진폭이라도 빠르게 출렁여 "흥분").
+    //   life=0 시 정지 (시체) — combat 채널만 영향, shock 는 속도 영향 X.
+    const omegaBoost = (1 + COMBAT_OMEGA_BOOST * combat) * life;
+
+    generatePolygon(this.dna, t, VERTEX_COUNT, this.phase, ampBoost, this.buffer, omegaBoost);
 
     const base = this.dna.shape.base;
     this.gfx.clear();

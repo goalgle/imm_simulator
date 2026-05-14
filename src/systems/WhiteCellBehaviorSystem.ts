@@ -15,7 +15,7 @@
 // 슈퍼 호중구 변환: mergeCounter ≥ 2 → 자기 isAbsorbed=true + 같은 자리에 NEUTROPHIL_SUPER 생성.
 
 import type { WhiteCell } from '../entities/WhiteCell';
-import { WhiteCell as WhiteCellCtor } from '../entities/WhiteCell';
+import { WhiteCell as WhiteCellCtor, CANCER_DIVIDE_IMPULSE } from '../entities/WhiteCell';
 import type { Bacteria } from '../entities/Bacteria';
 import type { Senses, Positioned } from '../domain/drives';
 import { applyDriveLerp } from './behaviorHelpers';
@@ -30,6 +30,11 @@ const FUSION_PADDING = 20;
 
 // 게임: 슈퍼 호중구로 변환되는 누적 흡수 횟수.
 const FUSION_THRESHOLD = 2;
+
+// 게임: fusion 시 강한 호중구의 뒤로 밀리는 반동 (px/s).
+//   약한 호중구가 빨려들어가는 방향의 반대로 임펄스 — WhiteCell.FRICTION (1.5/sec) 로 자연 감속.
+//   값이 클수록 더 멀리 밀림. 50 = 0.5초 후 약 20px 밀림 (마찰 적용).
+const FUSION_RECOIL_IMPULSE = 50;
 
 export class WhiteCellBehaviorSystem {
   private cells: WhiteCell[] = [];
@@ -62,6 +67,10 @@ export class WhiteCellBehaviorSystem {
 
   update(dt: number, bacteria: readonly Bacteria[]): void {
     const aliveAllies = this.getAlive();
+    // 게임: senses.allies 후보에서 변이 호중구 제외 — T세포의 seekAlly 등이 변이 호중구를
+    //   동족으로 인식 X. spaceAlly (회피) 도 변이 호중구 무시 — 분리력은 별도 시스템에서 처리.
+    //   findAllyTarget / findHostileWhiteCellTarget 은 별도 필터 갖고 있으니 aliveAllies 그대로 사용.
+    const sensesAllies = aliveAllies.filter((a) => a.mutation === null);
     for (const cell of this.cells) {
       if (cell.isDead()) continue;
 
@@ -86,19 +95,28 @@ export class WhiteCellBehaviorSystem {
         }
       }
 
-      // 게임: NEUTROPHIL 만 prey 동적 분기 — 동료 흡수 행동.
-      //        dnaKind 비교: 변이 후에도 호중구 정체성 유지.
+      // 게임: NEUTROPHIL 만 prey 동적 분기.
+      //   - zombie 변이: 가까운 다른 백혈구만 추적 (호중구만 공격)
+      //   - chaos 변이: 호중구 + 세균 중 가까운 쪽 (무차별 공격)
+      //   - 정상: 동료 흡수 행동 (자기 약하면 강한 동료, 자기 강하면 약한 동료)
       let prey: Positioned | null = nearestPrey;
       if (cell.dnaKind === 'NEUTROPHIL') {
-        const allyTarget = this.findAllyTarget(cell, aliveAllies);
-        if (allyTarget !== null) {
-          prey = allyTarget; // 동료 우선 (자기 약하면 강한 동료, 자기 강하면 약한 동료)
+        if (cell.mutation === 'zombie') {
+          const hostileTarget = this.findHostileWhiteCellTarget(cell, aliveAllies);
+          if (hostileTarget !== null) prey = hostileTarget;
+        } else if (cell.mutation === 'chaos') {
+          // 호중구 후보 + 세균 후보 (nearestPrey) 중 더 가까운 쪽
+          const wcTarget = this.findHostileWhiteCellTarget(cell, aliveAllies);
+          prey = closerOf(cell, wcTarget, nearestPrey);
+        } else {
+          const allyTarget = this.findAllyTarget(cell, aliveAllies);
+          if (allyTarget !== null) prey = allyTarget;
         }
       }
 
       const senses: Senses = {
         predators: [],
-        allies: aliveAllies,
+        allies: sensesAllies,
         nearestNutrient: null,
         nearestPrey: prey,
         nearestCommander,
@@ -116,6 +134,29 @@ export class WhiteCellBehaviorSystem {
 
     // 게임: B세포 항체 발사. cooldown 갱신 + 발사 가능 시 표적 결정 후 spawn.
     this.processBCellFiring(dt, bacteria);
+
+    // 게임: cancer 분열 처리 — pendingCancerSpawn flag 가 set 된 부모마다 자식 1마리 spawn.
+    this.processCancerDivision();
+  }
+
+  // 게임: cancer 분열 — pendingCancerSpawn flag 가 켜진 부모에서 자식 1마리 spawn.
+  //   자식은 부모와 같은 위치 ±부모 base 만큼 좌 또는 우. vx 임펄스도 같은 방향.
+  //   자손은 setMutation('cancer') 만 호출 (HP 풀 회복) — beginCancerDivide 안 함 → 분열 1번만.
+  //   parent.dna 가 cancer 색 적용 상태라 자식 cloneDna 도 같은 색 (정상).
+  private processCancerDivision(): void {
+    const newborns: WhiteCell[] = [];
+    for (const c of this.cells) {
+      if (!c.pendingCancerSpawn) continue;
+      c.pendingCancerSpawn = false;
+      const side = Math.random() < 0.5 ? -1 : 1;
+      const offsetX = side * c.dna.shape.base * 0.6;
+      const phase = Math.random() * Math.PI * 2;
+      const child = new WhiteCellCtor(c.dna, this.renderer, c.x + offsetX, c.y, phase);
+      child.setMutation('cancer');
+      child.vx = side * CANCER_DIVIDE_IMPULSE;
+      newborns.push(child);
+    }
+    for (const n of newborns) this.cells.push(n);
   }
 
   // 게임: B세포 발사 처리. 시야 안 가장 가까운 세균 / 없으면 무작위 방향.
@@ -171,6 +212,7 @@ export class WhiteCellBehaviorSystem {
 
   // 게임: NEUTROPHIL 의 동료 흡수 추적 대상 결정.
   //   self.isWeak() 면 강한 동료, 아니면 약한 동료. 적절한 후보 없으면 null.
+  //   변이된 호중구 (zombie/chaos 등) 는 흡수 대상에서 제외 — 일반 호중구만 fusion.
   private findAllyTarget(self: WhiteCell, aliveAllies: readonly WhiteCell[]): WhiteCell | null {
     let best: WhiteCell | null = null;
     let bestDist2 = Infinity;
@@ -178,9 +220,26 @@ export class WhiteCellBehaviorSystem {
     for (const ally of aliveAllies) {
       if (ally === self) continue;
       if (ally.dnaKind !== 'NEUTROPHIL') continue; // 일반 호중구끼리만
+      if (ally.mutation !== null) continue; // 변이된 호중구 흡수 X
       const allyWeak = ally.isWeak();
       if (wantWeak && !allyWeak) continue;
       if (!wantWeak && allyWeak) continue;
+      const dx = ally.x - self.x;
+      const dy = ally.y - self.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestDist2) { bestDist2 = d2; best = ally; }
+    }
+    return best;
+  }
+
+  // 게임: zombie/chaos 변이 호중구의 추적 대상. 자기 제외 가장 가까운 살아있는 백혈구.
+  //   호중구 / NK / SUPER / BCELL / TCELL 모두 후보 (좀비 = 동료 백혈구 무차별 공격 의도).
+  //   ContactSystem 의 호중구↔호중구 페어 검사가 실제 데미지 처리.
+  private findHostileWhiteCellTarget(self: WhiteCell, aliveAllies: readonly WhiteCell[]): WhiteCell | null {
+    let best: WhiteCell | null = null;
+    let bestDist2 = Infinity;
+    for (const ally of aliveAllies) {
+      if (ally === self) continue;
       const dx = ally.x - self.x;
       const dy = ally.y - self.y;
       const d2 = dx * dx + dy * dy;
@@ -195,8 +254,10 @@ export class WhiteCellBehaviorSystem {
   //         강한 호중구 mergeCounter +1. 2 도달 시 슈퍼 호중구로 변환.
   private processFusion(): void {
     const candidates = this.cells.filter(
-      // 게임: fusing 중인 cell 은 제외 — 중복 흡수 / target 변경 회피.
-      (c) => !c.isDead() && !c.isAbsorbed && !c.isFusing() && c.dnaKind === 'NEUTROPHIL',
+      // 게임: fusing 중 / 변이된 호중구 (zombie/chaos 등) 는 fusion 후보에서 제외.
+      //   변이 호중구는 추적 대상이 동료 백혈구 (ContactSystem 분기) 라 의미상 fusion 대상 아님.
+      (c) => !c.isDead() && !c.isAbsorbed && !c.isFusing()
+        && c.dnaKind === 'NEUTROPHIL' && c.mutation === null,
     );
     const transformed: { x: number; y: number }[] = [];
 
@@ -223,6 +284,14 @@ export class WhiteCellBehaviorSystem {
         // 게임: 즉시 isAbsorbed 대신 애니메이션 시작 — weak 가 strong 으로 빨려들어감.
         //   완료(0.35s 후) 시 weak.isAbsorbed=true 로 자동 정리.
         weak.startFusion(strong);
+        // 게임: 강한 호중구 반동 — 약한 호중구가 들어오는 방향의 반대로 임펄스.
+        //   weak → strong 방향이 흡수 방향이므로, 그 반대(= strong → weak 의 반대 = strong 위치 - weak 위치 의 반대)
+        //   strong 입장에서 weak 가 자기쪽으로 오니, weak 의 반대편으로 살짝 밀림.
+        const rdx = strong.x - weak.x;
+        const rdy = strong.y - weak.y;
+        const rd = Math.hypot(rdx, rdy) || 1;
+        strong.vx += (rdx / rd) * FUSION_RECOIL_IMPULSE;
+        strong.vy += (rdy / rd) * FUSION_RECOIL_IMPULSE;
         strong.mergeCounter++;
         if (strong.mergeCounter >= FUSION_THRESHOLD) {
           // 슈퍼 호중구 변환: 자기 정리 + 같은 자리에 NEUTROPHIL_SUPER 생성.
@@ -239,4 +308,16 @@ export class WhiteCellBehaviorSystem {
       this.cells.push(new WhiteCellCtor(NEUTROPHIL_SUPER, this.renderer, pos.x, pos.y, phase));
     }
   }
+}
+
+// 게임: from 기준 두 후보 중 더 가까운 것. 둘 다 null 이면 null.
+//   chaos 호중구의 prey 결정 — 호중구 후보 vs 세균 후보 중 가까운 쪽 선택.
+function closerOf(from: Positioned, a: Positioned | null, b: Positioned | null): Positioned | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  const adx = a.x - from.x;
+  const ady = a.y - from.y;
+  const bdx = b.x - from.x;
+  const bdy = b.y - from.y;
+  return adx * adx + ady * ady < bdx * bdx + bdy * bdy ? a : b;
 }

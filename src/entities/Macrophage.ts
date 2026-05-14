@@ -16,6 +16,12 @@ import type { CellRenderer, CellRenderHandle } from '../render/CellRenderer';
 export class Macrophage {
   private handle: CellRenderHandle;
   vx = 0;
+  // 게임: 유저 수동 조작 (Session 19). manualUntil = gameTime 기준 만료 시각, 0 이면 비활성.
+  //   BloodScene 의 cursor 키 isDown 매 프레임 갱신. MacrophageSystem 가 t < manualUntil 이면
+  //   vx = manualDirX * speed 로 사용자 입력 따라가고, nearest 시체 추적 로직 skip.
+  //   키 떼도 manualUntil 까지 마지막 방향 드리프트 → 만료 시 자동 모드 복귀.
+  manualUntil = 0;
+  manualDirX: -1 | 0 | 1 = 0;
 
   constructor(
     public readonly dna: DNA,

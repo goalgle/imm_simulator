@@ -8,6 +8,13 @@ import type { DNA } from './dna';
 
 export type Point = { x: number; y: number };
 
+// 게임: 모든 cell 의 wave 진폭에 곱해지는 글로벌 스케일.
+//   1.0 = dna 정의값 그대로, < 1.0 = 더 원형에 가까움, > 1.0 = 더 울퉁불퉁.
+//   Session 17 미세조정 — 0.3 (꽤 원형에 가까운 톤).
+//   임시 자극용 ampBoost 와는 별개. base 는 영향 안 받아 평균 크기 유지.
+//   영구 정착 시 dna.ts 8 프리셋의 A 값을 직접 조정하는 게 정합성 ↑ — 본 상수는 실험/조정 자리.
+const WAVE_AMP_SCALE = 0.4;
+
 // 게임: 단일 각도 θ 에서의 반지름 평가.
 //   dna       : 세포의 정본 DNA
 //   theta     : 각도 (라디안, 0 ~ 2π)
@@ -17,19 +24,23 @@ export type Point = { x: number; y: number };
 //   ampBoost  : wave 진폭 배율 (기본 1). 충격파/접촉 등 임시 자극으로
 //               형태가 더 출렁이는 효과를 줄 때 > 1 (예: 1.5).
 //               base 자체는 영향받지 않으므로 평균 크기는 유지되고 변형만 강화됨.
+//   omegaBoost: wave 떨림 속도 배율 (기본 1). 같은 진폭이라도 더 빠르게 출렁이게 하여
+//               "흥분/격분" 시각. ampBoost 와 곱연산이라 둘 다 ↑ 하면 격렬한 변형.
 export function evaluateRadius(
   dna: DNA,
   theta: number,
   t: number,
   phase = 0,
   ampBoost = 1,
+  omegaBoost = 1,
 ): number {
   const s = dna.shape;
+  const amp = WAVE_AMP_SCALE * ampBoost;
   return (
     s.base +
-    s.base * s.w1.A * ampBoost * Math.sin(s.w1.n * theta + s.w1.omega * t + phase) +
-    s.base * s.w2.A * ampBoost * Math.sin(s.w2.n * theta + s.w2.omega * t + phase) +
-    s.base * s.w3.A * ampBoost * Math.sin(s.w3.n * theta + s.w3.omega * t + phase)
+    s.base * s.w1.A * amp * Math.sin(s.w1.n * theta + s.w1.omega * omegaBoost * t + phase) +
+    s.base * s.w2.A * amp * Math.sin(s.w2.n * theta + s.w2.omega * omegaBoost * t + phase) +
+    s.base * s.w3.A * amp * Math.sin(s.w3.n * theta + s.w3.omega * omegaBoost * t + phase)
   );
 }
 
@@ -45,11 +56,12 @@ export function generatePolygon(
   phase = 0,
   ampBoost = 1,
   out?: Point[],
+  omegaBoost = 1,
 ): Point[] {
   const result = out ?? new Array<Point>(vertexCount);
   for (let i = 0; i < vertexCount; i++) {
     const theta = (i / vertexCount) * Math.PI * 2;
-    const r = evaluateRadius(dna, theta, t, phase, ampBoost);
+    const r = evaluateRadius(dna, theta, t, phase, ampBoost, omegaBoost);
     const x = Math.cos(theta) * r;
     const y = Math.sin(theta) * r;
     if (out) {
