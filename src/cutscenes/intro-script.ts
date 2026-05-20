@@ -55,7 +55,7 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   action('spawnNeutrophils'),
 
   narration(`
-    이렇게 됩니다. 떨어진건 고름이라 생각해주세요.
+    이렇게 됩니다. 떨어진건 죽은 세포 즉, 고름입니다.
   `),
 
   narration(`
