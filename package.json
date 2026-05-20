@@ -9,12 +9,14 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest"
+    "test": "vitest",
+    "deploy": "npm run build && gh-pages -d dist"
   },
   "dependencies": {
     "phaser": "^3.80.1"
   },
   "devDependencies": {
+    "gh-pages": "^6.3.0",
     "typescript": "^5.5.4",
     "vite": "^5.4.0",
     "vitest": "^2.0.0"
