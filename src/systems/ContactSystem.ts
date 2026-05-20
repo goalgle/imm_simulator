@@ -48,7 +48,10 @@ export class ContactSystem {
         const wAttackMult = w.mutation === 'chaos' ? CHAOS_ATTACK_MULT : 1;
         b.applyDamage(w.dna.combat.attack * wAttackMult * dt);
         const wAliveBefore = !w.isDead();
-        w.applyDamage(b.dna.combat.attack * dt);
+        // 게임: NK 가 세균 커맨더 공격 시 자기 HP 소모 X — 암살자 톤 (커맨더는 NK 의 1순위 표적).
+        //   일반 세균과의 전투에선 정상 데미지. 변이 호중구 vs 는 별도 페어(아래)에서 처리.
+        const wNoDamage = w.dnaKind === 'NK_CELL' && b.isCommander();
+        w.applyDamage(wNoDamage ? 0 : b.dna.combat.attack * dt);
 
         // 게임: 시각 자극. 양쪽 모두 빨강쪽으로 lerp.
         const stimulus = COMBAT_STIMULUS_RATE * dt;
@@ -78,10 +81,12 @@ export class ContactSystem {
       }
     }
 
-    // 게임: (2) 호중구↔호중구 페어 — Stage 11 신규. 한 쪽이라도 zombie/chaos 면 공격 발생.
-    //   변이 호중구는 자기 attack × mult (zombie=2, chaos=3) 로 공격.
-    //   정상 호중구는 자기 attack × 1 로 반격 — "싸우면 데미지 받음" (변이 호중구도 피해 누적).
-    //   둘 다 정상이면 공격 없음 (분리력만 작용).
+    // 게임: (2) 호중구↔호중구 페어 — Stage 11 신규 + NK 변이 제거.
+    //   공격 발생 조건:
+    //     a) 한 쪽이라도 zombie/chaos (Stage 11 의 hostile 변이)
+    //     b) 한 쪽이 NK + 다른 쪽이 변이 (어떤 변이든) — NK 가 변이 호중구 처치
+    //   변이 호중구 attack × mult (zombie=2, chaos=3). 정상은 ×1.
+    //   NK 가 변이 호중구 잡을 때는 자기 HP 소모 X (1순위 표적).
     for (let i = 0; i < whiteCells.length; i++) {
       const a = whiteCells[i];
       if (a.isDead()) continue;
@@ -90,14 +95,19 @@ export class ContactSystem {
         const b = whiteCells[j];
         if (b.isDead()) continue;
         const bMult = attackMultFor(b.mutation);
-        if (aMult === 0 && bMult === 0) continue; // 둘 다 정상 — 공격 없음
+
+        const aIsNkVsMutant = a.dnaKind === 'NK_CELL' && b.mutation !== null;
+        const bIsNkVsMutant = b.dnaKind === 'NK_CELL' && a.mutation !== null;
+        // 둘 다 정상 + NK 변이 페어도 아님 — 공격 없음 (분리력만).
+        if (aMult === 0 && bMult === 0 && !aIsNkVsMutant && !bIsNkVsMutant) continue;
         if (!isContacting(a, b)) continue;
 
         // 게임: hostile 은 mult 적용, 정상은 ×1 반격.
         const aDamage = a.dna.combat.attack * (aMult > 0 ? aMult : 1);
         const bDamage = b.dna.combat.attack * (bMult > 0 ? bMult : 1);
-        b.applyDamage(aDamage * dt);
-        a.applyDamage(bDamage * dt);
+        // 게임: NK 가 변이 호중구 잡을 때 NK 측 HP 소모 X.
+        b.applyDamage(bIsNkVsMutant ? 0 : aDamage * dt);
+        a.applyDamage(aIsNkVsMutant ? 0 : bDamage * dt);
 
         const stimulus = COMBAT_STIMULUS_RATE * dt;
         a.applyCombatStimulus(stimulus);

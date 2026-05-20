@@ -36,6 +36,11 @@ const FUSION_THRESHOLD = 2;
 //   값이 클수록 더 멀리 밀림. 50 = 0.5초 후 약 20px 밀림 (마찰 적용).
 const FUSION_RECOIL_IMPULSE = 50;
 
+// 게임: NK 가 변이 호중구를 우선 추적하는 감지 범위 (px).
+//   이 안에 변이 호중구 (mutation !== null) 가 있으면 커맨더보다 우선 — "범위 내 변이세포 먼저 제거".
+//   범위 밖이면 기존 우선순위 (커맨더 → fallback 일반 세균) 유지.
+const NK_MUTANT_DETECT_RANGE = 200;
+
 export class WhiteCellBehaviorSystem {
   private cells: WhiteCell[] = [];
 
@@ -111,6 +116,19 @@ export class WhiteCellBehaviorSystem {
         } else {
           const allyTarget = this.findAllyTarget(cell, aliveAllies);
           if (allyTarget !== null) prey = allyTarget;
+        }
+      }
+
+      // 게임: NK_CELL 만 — 감지 범위 안 변이 호중구가 있으면 커맨더보다 우선 추적.
+      //   prey 를 변이 호중구로 override + nearestCommander 를 null 처리 →
+      //   seekCommander drive 비활성 → seekPrey (0.7) 로만 끌림. 변이 호중구로 직진.
+      //   변이 호중구 없거나 범위 밖이면 기존 동작 (seekCommander 1.5 / fallback seekPrey).
+      //   avoidWorker (일반 세균 80px 우회) 는 그대로 유지.
+      if (cell.dnaKind === 'NK_CELL') {
+        const mutantTarget = this.findNearestMutantInRange(cell, aliveAllies, NK_MUTANT_DETECT_RANGE);
+        if (mutantTarget !== null) {
+          prey = mutantTarget;
+          nearestCommander = null;
         }
       }
 
@@ -243,6 +261,25 @@ export class WhiteCellBehaviorSystem {
       const dx = ally.x - self.x;
       const dy = ally.y - self.y;
       const d2 = dx * dx + dy * dy;
+      if (d2 < bestDist2) { bestDist2 = d2; best = ally; }
+    }
+    return best;
+  }
+
+  // 게임: NK 의 변이 호중구 우선 추적 — range 안 가장 가까운 변이 호중구 1마리.
+  //   후보: mutation !== null 인 살아있는 호중구 (zombie / cancer / corruption / hyperactive / paralysis / chaos).
+  //   range 밖이면 null → 호출자가 기존 우선순위 (커맨더 / fallback) 유지.
+  private findNearestMutantInRange(self: WhiteCell, aliveAllies: readonly WhiteCell[], range: number): WhiteCell | null {
+    const range2 = range * range;
+    let best: WhiteCell | null = null;
+    let bestDist2 = Infinity;
+    for (const ally of aliveAllies) {
+      if (ally === self) continue;
+      if (ally.mutation === null) continue;
+      const dx = ally.x - self.x;
+      const dy = ally.y - self.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > range2) continue;
       if (d2 < bestDist2) { bestDist2 = d2; best = ally; }
     }
     return best;
