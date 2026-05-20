@@ -516,7 +516,9 @@ export class BloodScene extends Phaser.Scene {
 
     // 게임: 컷신 시작 (Session 21). create 끝 — UI 텍스트 등 모두 만들어진 후.
     //   컷신 끝나면 자동으로 beginNextPlacement 호출 (advanceCutsceneStep 의 end 처리).
-    //   영양분 시스템은 컷신 동안 비활성 — spawnNutrients 액션이 5개만 명시 spawn. 컷신 종료 시 enableAll.
+    //   영양분 시스템 frozen + disableAll — 컷신 동안 spawnAt 5개 외 어떤 영양분도 등장 X.
+    //   세균이 영양분 흡수해도 frozen 이라 부활 차단.
+    this.nutrientSystem.frozen = true;
     this.nutrientSystem.disableAll();
     this.beginCutscene();
 
@@ -665,6 +667,8 @@ export class BloodScene extends Phaser.Scene {
     this.bacteriaBehavior.frozen = false;
     this.cutsceneSparkleGfx?.destroy();
     this.cutsceneSparkleGfx = null;
+    this.nutrientSystem.setSpawnBox(null);  // 화면 전체 부활 영역 복원.
+    this.nutrientSystem.frozen = false;
     this.nutrientSystem.enableAll();
     this.populateStageStart();
     this.beginNextPlacement(this.scale.width, this.scale.height);
@@ -776,6 +780,41 @@ export class BloodScene extends Phaser.Scene {
       this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, W / 2, H / 2, Math.random() * Math.PI * 2));
       return;
     }
+    if (kind === 'reinforcement') {
+      this.cutsceneSimActive = true;
+      this.bacteriaBehavior.frozen = false;  // 세균 정지 해제 — 영양분 추격 시작
+      // 게임: 영양분 지속 리젠 — 백혈구 centroid 근처 박스로 spawn 영역 제한. 흡수돼도 같은 박스에 부활.
+      //   세균이 영양분 먹으려면 백혈구 영역에 진입 → 자연 접촉/전투 발생.
+      const live = this.whiteCellBehavior.getAlive();
+      let cx = W / 2, cy = H / 2;
+      if (live.length > 0) {
+        cx = live.reduce((s, c) => s + c.x, 0) / live.length;
+        cy = live.reduce((s, c) => s + c.y, 0) / live.length;
+      }
+      this.nutrientSystem.setSpawnBox({ cx, cy, half: 80 });
+      this.nutrientSystem.frozen = false;
+      this.nutrientSystem.disableAll();
+      // 게임: 6개만 활성 (인덱스 0~5). 나머지 슬롯은 비활성. 흡수돼도 같은 box 안 새 위치에 부활.
+      for (let i = 0; i < 6; i++) this.nutrientSystem.spawnAt(i, cx + (Math.random() * 2 - 1) * 80, cy + (Math.random() * 2 - 1) * 80);
+      // 게임: 세균 5 + 커맨더 1 추가 — 커맨더가 팀 영입/공격 모드 결정. 백혈구 처치 가능성 ↑.
+      for (let i = 0; i < 5; i++) {
+        const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+        const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
+        this.bacteriaBehavior.spawn(BACTERIA_A, x, y, Math.random() * Math.PI * 2);
+      }
+      // 게임: 커맨더는 직접 spawn 하지 않고 진화 시스템에 위임 — 자연 등장.
+      //   requeueDeathRecord 에 fake deathTime 등록 → COMMANDER_EVOLUTION_DELAY (10s) 후 자동 진화.
+      //   5초 후 등장하려면 deathTime = gameTime - 5 (t - deathTime = 5 + 5 = 10 도달).
+      const evolveAfter = 5;  // 초 (보강 시작 이만큼 후 일반 세균 중 1마리가 커맨더로).
+      this.teamSystem.requeueDeathRecord(this.gameTime - (COMMANDER_EVOLUTION_DELAY - evolveAfter));
+      // 게임: 호중구 2 추가.
+      for (let i = 0; i < 2; i++) {
+        const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+        const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
+        this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, Math.random() * Math.PI * 2));
+      }
+      return;
+    }
     console.warn('[cutscene] unknown action kind:', kind);
   }
 
@@ -855,6 +894,10 @@ export class BloodScene extends Phaser.Scene {
       this.updateCutsceneSpawnNeutrophils(dtReal);
       return;
     }
+    if (kind === 'reinforcement') {
+      this.updateCutsceneReinforcement(dtReal);
+      return;
+    }
     // unknown — placeholder 처럼 3s 후 진행.
     this.cutsceneActionTimer += dtReal;
     if (this.cutsceneActionTimer >= CUTSCENE_ACTION_PLACEHOLDER_DURATION) this.advanceCutsceneStep();
@@ -931,6 +974,19 @@ export class BloodScene extends Phaser.Scene {
     const liveCells = this.whiteCellBehavior.getAlive().length;
     if (liveBacteria === 0 || liveCells === 0 || this.cutsceneActionTimer >= MAX_TIME) {
       this.bacteriaBehavior.frozen = false;
+      this.advanceCutsceneStep();
+    }
+  }
+
+  // 게임: 보강 — 세균 + 커맨더 vs 호중구. 백혈구 (NEUTROPHIL/NK/SUPER) 전멸 시 종료.
+  //   maxTime 30s 안전망 — 호중구가 안 죽으면 자동 진행.
+  private updateCutsceneReinforcement(dtReal: number): void {
+    this.cutsceneActionTimer += dtReal;
+    const MAX_TIME = 30;
+    const liveNeutrophils = this.whiteCellBehavior.getAlive().filter((c) =>
+      c.dnaKind === 'NEUTROPHIL' || c.dnaKind === 'NK_CELL' || c.dnaKind === 'NEUTROPHIL_SUPER',
+    ).length;
+    if (liveNeutrophils === 0 || this.cutsceneActionTimer >= MAX_TIME) {
       this.advanceCutsceneStep();
     }
   }

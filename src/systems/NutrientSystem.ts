@@ -20,6 +20,12 @@ export class NutrientSystem {
   //        consume → active=false + respawnAt=t+delay
   //        update(t)에서 respawnAt 도달한 슬롯들을 새 위치로 부활.
   private nutrients: Nutrient[] = [];
+  // 게임: 컷신 (Session 21) — frozen=true 면 update() 부활 검사 skip + consume 도 respawnAt 무한대.
+  //   컷신 도중 세균이 영양분 흡수 시 자동 부활 차단 — 지정된 5개만 등장.
+  frozen = false;
+  // 게임: 영양분 부활 위치 override (Session 21). null 이면 화면 전체 무작위, 설정 시 박스 안 무작위.
+  //   컷신 reinforcement 단계에서 백혈구 centroid 근처로 제한 — 세균이 백혈구 영역에 들어와야 먹음.
+  private spawnBox: { cx: number; cy: number; half: number } | null = null;
 
   constructor(
     count: number,
@@ -31,8 +37,22 @@ export class NutrientSystem {
     }
   }
 
-  // 게임: 새 영양분(또는 부활용) 생성. 항상 active=true.
+  // 게임: 부활 영역 override 설정/해제 (Session 21 컷신용).
+  setSpawnBox(box: { cx: number; cy: number; half: number } | null): void {
+    this.spawnBox = box;
+  }
+
+  // 게임: 새 영양분(또는 부활용) 생성. 항상 active=true. spawnBox 설정 시 그 안에서 무작위, 아니면 화면 전체.
   private makeFreshNutrient(): Nutrient {
+    if (this.spawnBox !== null) {
+      const b = this.spawnBox;
+      return {
+        x: b.cx + (Math.random() * 2 - 1) * b.half,
+        y: b.cy + (Math.random() * 2 - 1) * b.half,
+        active: true,
+        respawnAt: 0,
+      };
+    }
     const m = this.bounds.margin;
     return {
       x: m + Math.random() * (this.bounds.width - m * 2),
@@ -43,15 +63,18 @@ export class NutrientSystem {
   }
 
   // 게임: 인덱스로 영양분 1개 소비. 슬롯은 비활성화되고 respawnDelaySec 후에 부활 예약.
+  //   frozen 중에는 respawnAt 을 무한대로 — 컷신 동안 부활 차단.
   consume(index: number, t: number): void {
     const n = this.nutrients[index];
     if (!n || !n.active) return;
     n.active = false;
-    n.respawnAt = t + this.respawnDelaySec;
+    n.respawnAt = this.frozen ? Number.MAX_SAFE_INTEGER : t + this.respawnDelaySec;
   }
 
   // 게임: 매 프레임 호출. 부활 시각 도달한 비활성 슬롯을 새 위치로 활성화.
+  //   frozen 중에는 부활 검사 skip — 컷신 동안 영양분 추가 등장 X.
   update(t: number): void {
+    if (this.frozen) return;
     for (const n of this.nutrients) {
       if (!n.active && t >= n.respawnAt) {
         const fresh = this.makeFreshNutrient();
