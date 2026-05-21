@@ -31,6 +31,11 @@ export class AntibodyRenderer {
     }
   }
 
+  // 게임: 화면 표시 토글 — EntityRegistry.antibody.visible 반영.
+  setVisible(visible: boolean): void {
+    this.gfx.setVisible(visible);
+  }
+
   destroy(): void {
     this.gfx.destroy();
   }

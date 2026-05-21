@@ -5,7 +5,7 @@
 
 import Phaser from 'phaser';
 import { NEUTROPHIL, NEUTROPHIL_SUPER, NK_CELL, BCELL, TCELL, BACTERIA_A, BACTERIA_COMMANDER, MACROPHAGE } from '../domain/dna';
-import { WhiteCell } from '../entities/WhiteCell';
+// 게임: WhiteCell 클래스 직접 import 제거 — spawn 은 whiteCellBehavior.spawn() 으로 통일됨.
 import { Macrophage } from '../entities/Macrophage';
 import { GraphicsCellRenderer } from '../render/GraphicsCellRenderer';
 import type { CellRenderer, CellRenderHandle } from '../render/CellRenderer';
@@ -25,7 +25,8 @@ import { applySeparation } from '../domain/separation';
 import { pickMutation, applyMutation, type MutationKind } from '../domain/mutations';
 import { STAGE_1, type StageConfig, type StageResult } from '../stages/types';
 import { CUTSCENE_INTRO } from '../cutscenes/intro-script';
-import type { CutsceneStep } from '../cutscenes/types';
+import type { CutsceneStep, WaitCondition } from '../cutscenes/types';
+import { EntityRegistry } from '../domain/entityControl';
 
 // 게임: 초기 spawn 수는 Session 20 부터 StageConfig 로 이전 (src/stages/types.ts).
 //   COMMANDER_COUNT 는 placement queue 의 의미로만 (사용자가 클릭으로 1마리 배치) — 상수 유지.
@@ -268,9 +269,7 @@ const PARALYSIS_PROPAGATION_DURATION = 0.5;
 const CUTSCENE_WORD_INTERVAL = 0.12;
 // 게임: 컷신 라인 사이 자동 pause (초). 한 라인 끝 → 다음 라인 시작까지.
 const CUTSCENE_LINE_PAUSE = 0.4;
-// 게임: 컷신 ACTION step placeholder 시간 (초). Stage A 는 모든 action 이 3s 자동 진행.
-//   Stage B 에서 kind 별 실제 시간/조건으로 교체.
-const CUTSCENE_ACTION_PLACEHOLDER_DURATION = 3;
+// 게임: 단계 6 — CUTSCENE_ACTION_PLACEHOLDER_DURATION 제거 (ACTION 핸들러 자체가 제거됨).
 
 // 게임: 페이즈 2 hit 성공 확률 (Session 19).
 //   바이러스가 DNA 중심 도달했을 때 hit++ 적용될 확률. 1.0 = 적중 = 무조건 hit.
@@ -297,8 +296,17 @@ export class BloodScene extends Phaser.Scene {
   private macrophageSystem!: MacrophageSystem;
   private antibodySystem!: AntibodySystem;
   private antibodyRenderer!: AntibodyRenderer;
+  // 게임: 모든 개체 종류의 등장·표시·정지·속도·확률 통합 제어 (단계 1~2).
+  //   컷신 / 디버그 / 스테이지 셋업이 entityRegistry.set() 으로 dimension 제어 →
+  //   각 시스템이 매 프레임 조회하여 분기.
+  private entityRegistry!: EntityRegistry;
   private hudText!: Phaser.GameObjects.Text;
   private fpsText!: Phaser.GameObjects.Text;
+  // 게임: 키 안내 줄 — 변수로 잡아 [H] 토글 대상에 포함.
+  private controlsText!: Phaser.GameObjects.Text;
+  // 게임: 상단 디버그 텍스트 표시 여부. [H] 키 토글. 기본 true (개발/검수 편의).
+  //   영향 대상: hudText, fpsText, controlsText, debugHud. stageHudText 는 게임플레이용이라 제외.
+  private debugVisible = true;
   private placementText!: Phaser.GameObjects.Text;
   // 게임: 스테이지 HUD (Session 20) — 화면 상단 중앙 카운트다운 + 세균 진행.
   private stageHudText!: Phaser.GameObjects.Text;
@@ -336,13 +344,20 @@ export class BloodScene extends Phaser.Scene {
   private cutsceneUiBg: Phaser.GameObjects.Graphics | null = null;
   private cutsceneUiText: Phaser.GameObjects.Text | null = null;
   private cutsceneUiHint: Phaser.GameObjects.Text | null = null;
-  // 게임: 컷신 ACTION 중 sim 활성 여부 (Session 21 Stage B). spawnBacteria/spawnNeutrophils 만 true.
-  private cutsceneSimActive = false;
-  // 게임: spawnNutrients ACTION 의 sub-phase ('spawning' / 'pause' / 'sparkling').
-  private cutsceneNutPhase = '';
-  private cutsceneNutSpawned = 0;
-  private cutsceneNutPositions: { x: number; y: number }[] = [];
+  // 게임: 단계 6 — 기존 ACTION 핸들러 멤버들 (cutsceneSimActive / cutsceneNutPhase 등) 제거.
+  //   intro-script 가 선언적 control()/spawn()/pause() 로 마이그레이션됨.
+  //   sim 활성/정지는 control('xxx', { frozen }) 으로 대본이 직접 제어.
+  //
+  // 게임: 선언적 spawn step 의 진행 카운터 (단계 5). 현재 step 에서 이미 처리한 개수.
+  //   step 시작 시 0 으로 reset. interval>0 마다 +1, count 도달 시 sparkle phase 또는 advance.
+  private cutsceneSpawnDone = 0;
+  // 게임: sparkle 효과 상태 — spawn step 의 sparkleSeconds > 0 일 때 spawn 완료 후 사용.
+  //   positions : spawn 한 위치들 (sparkle 그릴 좌표)
+  //   gfx       : 매 프레임 strokeCircle 그리는 Graphics. sparkle 종료 시 destroy.
+  //   startTime : cutsceneActionTimer 기준 sparkle 시작 시점 (이전엔 spawn 진행 중).
+  private cutsceneSpawnPositions: { x: number; y: number }[] = [];
   private cutsceneSparkleGfx: Phaser.GameObjects.Graphics | null = null;
+  private cutsceneSparkleStartTime = 0;
   // 게임: 스테이지 시작 시각 (gameTime 기준, Session 21 Stage B). running 진입 시점에 기록.
   //   cutscene 동안 gameTime 진행되므로 stage HUD/wave/판정 비교 시 (gameTime - stageStartTime).
   private stageStartTime = 0;
@@ -401,6 +416,9 @@ export class BloodScene extends Phaser.Scene {
     this.nutrientRenderer = new NutrientRenderer(this);
     this.antibodyRenderer = new AntibodyRenderer(this);
 
+    // 게임: EntityRegistry 먼저 생성 — 시스템들이 생성자로 받음. 모든 종 디폴트.
+    this.entityRegistry = new EntityRegistry();
+
     this.shockwaveSystem = new ShockwaveSystem({
       ...SHOCKWAVE_CONFIG,
       initialTime: 0,  // 가상 시간 시작점
@@ -409,13 +427,14 @@ export class BloodScene extends Phaser.Scene {
       NUTRIENT_COUNT,
       { width: W, height: H, margin: NUTRIENT_MARGIN },
       NUTRIENT_RESPAWN_DELAY,
+      this.entityRegistry,
     );
-    this.antibodySystem = new AntibodySystem(ANTIBODY_MAX_STOPPED);
-    this.bacteriaBehavior = new BacteriaBehaviorSystem(this.cellRenderer);
-    this.whiteCellBehavior = new WhiteCellBehaviorSystem(this.cellRenderer, this.antibodySystem);
+    this.antibodySystem = new AntibodySystem(ANTIBODY_MAX_STOPPED, this.entityRegistry);
+    this.bacteriaBehavior = new BacteriaBehaviorSystem(this.cellRenderer, this.entityRegistry);
+    this.whiteCellBehavior = new WhiteCellBehaviorSystem(this.cellRenderer, this.antibodySystem, this.entityRegistry);
     this.contactSystem = new ContactSystem();
     this.teamSystem = new TeamSystem();
-    this.macrophageSystem = new MacrophageSystem();
+    this.macrophageSystem = new MacrophageSystem(this.entityRegistry);
 
     // 게임: 스테이지 상태 초기화 (Session 20). restart 시에도 첫 스테이지부터.
     this.currentStage = STAGE_1;
@@ -483,7 +502,7 @@ export class BloodScene extends Phaser.Scene {
       fontFamily: 'ui-monospace, monospace',
       fontSize: '14px',
     });
-    this.add.text(20, 80, '[N]+호중구10  [B]+세균10  [P]일시정지  [R]리셋  [1/2/3] 1x/2x/4x  [←→]대식세포  [I]개입/관전  [M]무작위변이  [Shift+1~6]변이1~6  [Z]풍선', {
+    this.controlsText = this.add.text(20, 80, '[N]+호중구10  [B]+세균10  [P]일시정지  [R]리셋  [1/2/3] 1x/2x/4x  [←→]대식세포  [I]개입/관전  [M]무작위변이  [Shift+1~6]변이1~6  [Z]풍선  [H]디버그토글', {
       color: '#888',
       fontFamily: 'ui-monospace, monospace',
       fontSize: '12px',
@@ -552,7 +571,20 @@ export class BloodScene extends Phaser.Scene {
         this.interactive = !this.interactive;
         console.log('[mode]', this.interactive ? 'INTERACTIVE' : 'OBSERVE');
       });
+      // 게임: [H] 상단 디버그 텍스트 4종 ON/OFF.
+      //   hudText / fpsText / controlsText / debugHud — 일괄 visible 토글.
+      //   stageHudText (게임플레이 카운트다운) 는 영향 없음.
+      kb.on('keydown-H', () => this.toggleDebugVisible());
     }
+  }
+
+  // 게임: 상단 디버그 텍스트 일괄 토글. 게임플레이 HUD (스테이지 카운트다운) 는 제외.
+  private toggleDebugVisible(): void {
+    this.debugVisible = !this.debugVisible;
+    this.hudText.setVisible(this.debugVisible);
+    this.fpsText.setVisible(this.debugVisible);
+    this.controlsText.setVisible(this.debugVisible);
+    this.debugHud.setVisible(this.debugVisible);
   }
 
   // 게임: 디버그용 — 변이 안 된 살아있는 NEUTROPHIL 후보 중 무작위 선정 → 6 변이 중 균등.
@@ -595,10 +627,7 @@ export class BloodScene extends Phaser.Scene {
     this.cutsceneLinePause = 0;
     this.cutsceneAwaitingClick = false;
     this.cutsceneActionTimer = 0;
-    this.cutsceneSimActive = false;
-    this.cutsceneNutPhase = '';
-    this.cutsceneNutSpawned = 0;
-    this.cutsceneNutPositions = [];
+    this.cutsceneSpawnDone = 0;
     this.createCutsceneUI();
     console.log('[cutscene] begin, steps=', this.cutsceneSteps.length);
     this.applyCutsceneStep();
@@ -657,16 +686,15 @@ export class BloodScene extends Phaser.Scene {
     this.cutsceneUiHint = null;
   }
 
-  // 게임: 컷신 종료 — UI 제거 + 영양분 enableAll + 시작 spawn + placement 진입.
-  //   세균 frozen 도 해제. cutsceneSimActive false. populateStageStart 가 호중구/세균/대식세포 등장.
+  // 게임: 컷신 종료 — UI 제거 + EntityRegistry 디폴트 복귀 + 시작 spawn + placement 진입.
+  //   registry.reset() 으로 모든 종 다시 enabled/visible/!frozen 으로 (컷신이 set 한 모든 제어 해제).
+  //   populateStageStart 가 호중구/세균/대식세포 spawn.
   private endCutscene(): void {
     if (this.phase !== 'cutscene') return;
     console.log('[cutscene] end');
     this.destroyCutsceneUI();
-    this.cutsceneSimActive = false;
-    this.bacteriaBehavior.frozen = false;
-    this.cutsceneSparkleGfx?.destroy();
-    this.cutsceneSparkleGfx = null;
+    this.entityRegistry.reset();
+    this.bacteriaBehavior.frozen = false;  // legacy flag — 다음 정리 단계에 제거.
     this.nutrientSystem.setSpawnBox(null);  // 화면 전체 부활 영역 복원.
     this.nutrientSystem.frozen = false;
     this.nutrientSystem.enableAll();
@@ -685,7 +713,7 @@ export class BloodScene extends Phaser.Scene {
       const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
       const phase = Math.random() * Math.PI * 2;
       const hp = NEUTROPHIL.combat.maxHp * (0.6 + Math.random() * 0.4);
-      this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, phase, hp));
+      this.whiteCellBehavior.spawn(NEUTROPHIL, x, y, phase, hp);
     }
     for (let i = 0; i < this.currentStage.startBacteria; i++) {
       const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
@@ -723,14 +751,18 @@ export class BloodScene extends Phaser.Scene {
       this.showCutsceneUI();
       this.cutsceneUiText?.setText('');
       this.cutsceneUiHint?.setAlpha(0);
-      this.cutsceneSimActive = false;
-      this.bacteriaBehavior.frozen = false;
     } else {
-      // 게임: ACTION 진입 — 텍스트 박스 숨김, kind 별 셋업.
+      // 게임: control / spawn / pause — 공통 셋업. 실제 처리는 updateCutscene 분기.
+      //   sim 활성/정지는 control('xxx', { frozen }) 으로 대본이 직접 제어.
       this.cutsceneActionTimer = 0;
+      this.cutsceneSpawnDone = 0;
+      this.cutsceneSpawnPositions = [];
+      this.cutsceneSparkleStartTime = 0;
+      // 게임: 이전 step 의 sparkle gfx 가 살아있다면 정리 (방어적).
+      this.cutsceneSparkleGfx?.destroy();
+      this.cutsceneSparkleGfx = null;
       this.cutsceneAwaitingClick = false;
       this.hideCutsceneUI();
-      this.applyCutsceneAction(step.kind);
     }
   }
 
@@ -746,77 +778,7 @@ export class BloodScene extends Phaser.Scene {
     this.cutsceneUiHint?.setAlpha(0);  // hint 는 라인 완료 후 별도 표시
   }
 
-  // 게임: ACTION kind 별 진입 셋업 (Session 21 Stage B).
-  //   spawnNutrients   : sim 정지. sub-phase 'spawning' 으로 진입, 0.5s 간격 5개 spawn.
-  //   spawnBacteria    : sim 활성. 화면 중앙 2 세균 spawn. 영양분 active=0 시 종료.
-  //   spawnNeutrophils : sim 활성 + 세균 frozen. 호중구 3 spawn. live cells/bacteria 0 시 종료.
-  private applyCutsceneAction(kind: string): void {
-    const W = this.scale.width;
-    const H = this.scale.height;
-    if (kind === 'spawnNutrients') {
-      this.cutsceneSimActive = false;
-      this.cutsceneNutPhase = 'spawning';
-      this.cutsceneNutSpawned = 0;
-      this.cutsceneNutPositions = [];
-      this.cutsceneActionTimer = 0;  // 다음 spawn 까지 elapsed
-      return;
-    }
-    if (kind === 'spawnBacteria') {
-      this.cutsceneSimActive = true;
-      this.bacteriaBehavior.frozen = false;
-      // 게임: 중앙 ±40 박스 안 2마리 spawn. 자동 영양분 흡수 행동.
-      for (let i = 0; i < 2; i++) {
-        const x = W / 2 + (Math.random() - 0.5) * 80;
-        const y = H / 2 + (Math.random() - 0.5) * 80;
-        const phase = Math.random() * Math.PI * 2;
-        this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
-      }
-      return;
-    }
-    if (kind === 'spawnNeutrophils') {
-      this.cutsceneSimActive = true;
-      this.bacteriaBehavior.frozen = true;  // 세균 정지
-      // 게임: 호중구 1마리 — 화면 중앙 (세균/영양분 위치). 자동으로 가까운 세균 추적.
-      this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, W / 2, H / 2, Math.random() * Math.PI * 2));
-      return;
-    }
-    if (kind === 'reinforcement') {
-      this.cutsceneSimActive = true;
-      this.bacteriaBehavior.frozen = false;  // 세균 정지 해제 — 영양분 추격 시작
-      // 게임: 영양분 지속 리젠 — 백혈구 centroid 근처 박스로 spawn 영역 제한. 흡수돼도 같은 박스에 부활.
-      //   세균이 영양분 먹으려면 백혈구 영역에 진입 → 자연 접촉/전투 발생.
-      const live = this.whiteCellBehavior.getAlive();
-      let cx = W / 2, cy = H / 2;
-      if (live.length > 0) {
-        cx = live.reduce((s, c) => s + c.x, 0) / live.length;
-        cy = live.reduce((s, c) => s + c.y, 0) / live.length;
-      }
-      this.nutrientSystem.setSpawnBox({ cx, cy, half: 80 });
-      this.nutrientSystem.frozen = false;
-      this.nutrientSystem.disableAll();
-      // 게임: 6개만 활성 (인덱스 0~5). 나머지 슬롯은 비활성. 흡수돼도 같은 box 안 새 위치에 부활.
-      for (let i = 0; i < 6; i++) this.nutrientSystem.spawnAt(i, cx + (Math.random() * 2 - 1) * 80, cy + (Math.random() * 2 - 1) * 80);
-      // 게임: 세균 5 + 커맨더 1 추가 — 커맨더가 팀 영입/공격 모드 결정. 백혈구 처치 가능성 ↑.
-      for (let i = 0; i < 5; i++) {
-        const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
-        const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
-        this.bacteriaBehavior.spawn(BACTERIA_A, x, y, Math.random() * Math.PI * 2);
-      }
-      // 게임: 커맨더는 직접 spawn 하지 않고 진화 시스템에 위임 — 자연 등장.
-      //   requeueDeathRecord 에 fake deathTime 등록 → COMMANDER_EVOLUTION_DELAY (10s) 후 자동 진화.
-      //   5초 후 등장하려면 deathTime = gameTime - 5 (t - deathTime = 5 + 5 = 10 도달).
-      const evolveAfter = 5;  // 초 (보강 시작 이만큼 후 일반 세균 중 1마리가 커맨더로).
-      this.teamSystem.requeueDeathRecord(this.gameTime - (COMMANDER_EVOLUTION_DELAY - evolveAfter));
-      // 게임: 호중구 2 추가.
-      for (let i = 0; i < 2; i++) {
-        const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
-        const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
-        this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, Math.random() * Math.PI * 2));
-      }
-      return;
-    }
-    console.warn('[cutscene] unknown action kind:', kind);
-  }
+  // 게임: 단계 6 — applyCutsceneAction 제거. intro-script 가 선언적 step 으로 마이그레이션됨.
 
   // 게임: 매 프레임 컷신 진행 — dt 기준. real time (Phaser delta) 사용 (gameTime 정지 무관).
   private updateCutscene(dtReal: number): void {
@@ -825,8 +787,36 @@ export class BloodScene extends Phaser.Scene {
 
     if (step.type === 'narration') {
       this.updateCutsceneNarration(step.lines, dtReal);
-    } else if (step.type === 'action') {
-      this.updateCutsceneAction(step.kind, dtReal);
+    } else if (step.type === 'control') {
+      // 게임: control step — registry 갱신 즉시 (1프레임) 후 다음 step. timer 없음.
+      this.entityRegistry.set(step.kind, step.set);
+      this.advanceCutsceneStep();
+    } else if (step.type === 'spawn') {
+      // 게임: spawn step — area.interval 0 면 일괄 spawn 즉시 다음, >0 면 순차 (timer).
+      this.updateCutsceneSpawn(step, dtReal);
+    } else if (step.type === 'pause') {
+      // 게임: pause step — seconds 만큼 timer.
+      this.cutsceneActionTimer += dtReal;
+      if (this.cutsceneActionTimer >= step.seconds) this.advanceCutsceneStep();
+    } else if (step.type === 'waitFor') {
+      // 게임: waitFor step — 조건 충족 OR maxSeconds 도달 시 advance.
+      this.cutsceneActionTimer += dtReal;
+      if (this.evalWaitCondition(step.condition) || this.cutsceneActionTimer >= step.maxSeconds) {
+        this.advanceCutsceneStep();
+      }
+    } else if (step.type === 'evolveCommander') {
+      // 게임: 진화 트리거 — fake deathTime 을 backdate 하여 COMMANDER_EVOLUTION_DELAY 카운트다운.
+      //   deathTime = gameTime - (DELAY - afterSeconds) → 정확히 afterSeconds 후 expired.
+      //   afterSeconds >= DELAY 면 즉시 만료 (다음 evolveCommanders 호출에 변환).
+      const remainingDelay = Math.max(0, COMMANDER_EVOLUTION_DELAY - step.afterSeconds);
+      this.teamSystem.requeueDeathRecord(this.gameTime - remainingDelay);
+      this.advanceCutsceneStep();
+    } else if (step.type === 'nutrientRegen') {
+      this.applyNutrientRegen(step.options);
+      this.advanceCutsceneStep();
+    } else if (step.type === 'clear') {
+      this.applyCutsceneClear();
+      this.advanceCutsceneStep();
     } else {
       this.endCutscene();
     }
@@ -880,116 +870,189 @@ export class BloodScene extends Phaser.Scene {
     this.cutsceneUiText.setText(out.join('\n'));
   }
 
-  // 게임: action step 진행 (Session 21 Stage B). kind 별 분기.
-  private updateCutsceneAction(kind: string, dtReal: number): void {
-    if (kind === 'spawnNutrients') {
-      this.updateCutsceneSpawnNutrients(dtReal);
-      return;
-    }
-    if (kind === 'spawnBacteria') {
-      this.updateCutsceneSpawnBacteria(dtReal);
-      return;
-    }
-    if (kind === 'spawnNeutrophils') {
-      this.updateCutsceneSpawnNeutrophils(dtReal);
-      return;
-    }
-    if (kind === 'reinforcement') {
-      this.updateCutsceneReinforcement(dtReal);
-      return;
-    }
-    // unknown — placeholder 처럼 3s 후 진행.
-    this.cutsceneActionTimer += dtReal;
-    if (this.cutsceneActionTimer >= CUTSCENE_ACTION_PLACEHOLDER_DURATION) this.advanceCutsceneStep();
-  }
+  // 게임: 단계 6 — updateCutsceneAction 제거. step 'action' 타입은 더 이상 사용 X.
 
-  // 게임: 영양분 5개 순차 spawn → pause → sparkle.
-  //   spawning : 0.5s 간격 5번 spawnAt. 위치는 화면 중앙 ±60 무작위 (모여있게).
-  //   pause    : 5번째 후 0.6s 정지.
-  //   sparkling: 1s 동안 원 펄스 (반지름↑ + alpha↓).
-  private updateCutsceneSpawnNutrients(dtReal: number): void {
+  // 게임: 선언적 spawn step 처리 (단계 5 + sparkle 복원).
+  //   interval=0 (생략) → 첫 호출에 count 모두 일괄 spawn.
+  //   interval>0 → 매 interval 마다 1개 spawn, count 도달 시 sparkle phase 또는 advance.
+  //   sparkleSeconds>0 → spawn 완료 후 그 시간만큼 노란 원 펄스 + step 머묾 → advance.
+  private updateCutsceneSpawn(
+    step: { type: 'spawn'; kind: import('../domain/entityControl').EntityKind; count: number; area?: import('../cutscenes/types').SpawnArea },
+    dtReal: number,
+  ): void {
     const W = this.scale.width;
     const H = this.scale.height;
-    this.cutsceneActionTimer += dtReal;
-    if (this.cutsceneNutPhase === 'spawning') {
-      const TARGET_COUNT = 5;
-      const SPAWN_INTERVAL = 0.5;
-      const nextSpawnAt = this.cutsceneNutSpawned * SPAWN_INTERVAL;
-      if (this.cutsceneActionTimer >= nextSpawnAt && this.cutsceneNutSpawned < TARGET_COUNT) {
-        const x = W / 2 + (Math.random() - 0.5) * 120;
-        const y = H / 2 + (Math.random() - 0.5) * 120;
-        this.nutrientSystem.spawnAt(this.cutsceneNutSpawned, x, y);
-        this.cutsceneNutPositions.push({ x, y });
-        this.cutsceneNutSpawned++;
-      }
-      if (this.cutsceneNutSpawned >= TARGET_COUNT) {
-        this.cutsceneNutPhase = 'pause';
-        this.cutsceneActionTimer = 0;
-      }
-      return;
-    }
-    if (this.cutsceneNutPhase === 'pause') {
-      if (this.cutsceneActionTimer >= 0.6) {
-        this.cutsceneNutPhase = 'sparkling';
-        this.cutsceneActionTimer = 0;
-        this.cutsceneSparkleGfx = this.add.graphics();
-        this.cutsceneSparkleGfx.setDepth(BUBBLE_DEPTH + 19);
-      }
-      return;
-    }
-    if (this.cutsceneNutPhase === 'sparkling') {
-      const DURATION = 1.0;
-      const tt = Math.min(1, this.cutsceneActionTimer / DURATION);
-      const gfx = this.cutsceneSparkleGfx;
-      if (gfx) {
-        gfx.clear();
-        const r = 8 + tt * 24;
-        const alpha = 1 - tt;
-        gfx.lineStyle(2, 0xffff88, alpha);
-        for (const p of this.cutsceneNutPositions) gfx.strokeCircle(p.x, p.y, r);
-      }
-      if (tt >= 1) {
-        gfx?.destroy();
-        this.cutsceneSparkleGfx = null;
-        this.advanceCutsceneStep();
-      }
-      return;
-    }
-  }
+    const area = step.area ?? {};
+    const cx = area.cx ?? W / 2;
+    const cy = area.cy ?? H / 2;
+    const spread = area.spread ?? 0;
+    const interval = area.interval ?? 0;
+    const sparkleSeconds = area.sparkleSeconds ?? 0;
 
-  // 게임: 세균 자동 행동 (영양분 흡수 + 분열). 영양분 active=0 또는 maxTime 15s 시 종료.
-  private updateCutsceneSpawnBacteria(dtReal: number): void {
     this.cutsceneActionTimer += dtReal;
-    const MAX_TIME = 15;
-    if (this.nutrientSystem.getActiveCount() === 0 || this.cutsceneActionTimer >= MAX_TIME) {
+
+    // 게임: phase 1 — spawn 진행 (아직 count 미달).
+    if (this.cutsceneSpawnDone < step.count) {
+      if (interval <= 0) {
+        // 일괄 spawn — 한 번에 count 모두 처리.
+        for (let i = 0; i < step.count; i++) {
+          const x = cx + (Math.random() * 2 - 1) * spread;
+          const y = cy + (Math.random() * 2 - 1) * spread;
+          this.spawnByEntityKind(step.kind, x, y);
+          this.cutsceneSpawnPositions.push({ x, y });
+        }
+        this.cutsceneSpawnDone = step.count;
+      } else {
+        // 순차 spawn — cutsceneActionTimer 가 (done+1)*interval 도달 시 1개씩.
+        while (this.cutsceneSpawnDone < step.count
+            && this.cutsceneActionTimer >= (this.cutsceneSpawnDone + 1) * interval) {
+          const x = cx + (Math.random() * 2 - 1) * spread;
+          const y = cy + (Math.random() * 2 - 1) * spread;
+          this.spawnByEntityKind(step.kind, x, y);
+          this.cutsceneSpawnPositions.push({ x, y });
+          this.cutsceneSpawnDone++;
+        }
+      }
+      // 게임: 방금 count 도달했으면 sparkle 시작 시각 기록 (다음 프레임부터 phase 2).
+      if (this.cutsceneSpawnDone >= step.count) {
+        if (sparkleSeconds > 0) {
+          this.cutsceneSparkleStartTime = this.cutsceneActionTimer;
+          this.cutsceneSparkleGfx = this.add.graphics();
+          this.cutsceneSparkleGfx.setDepth(BUBBLE_DEPTH + 19);
+        } else {
+          this.advanceCutsceneStep();
+        }
+      }
+      return;
+    }
+
+    // 게임: phase 2 — sparkle (sparkleSeconds > 0 인 경우). count 모두 spawn 됐고 sparkle 진행 중.
+    const elapsed = this.cutsceneActionTimer - this.cutsceneSparkleStartTime;
+    const tt = Math.min(1, elapsed / sparkleSeconds);
+    const gfx = this.cutsceneSparkleGfx;
+    if (gfx) {
+      gfx.clear();
+      const r = 8 + tt * 24;          // 반지름 8 → 32px 확장
+      const alpha = 1 - tt;            // alpha 1 → 0 페이드
+      gfx.lineStyle(2, 0xffff88, alpha);
+      for (const p of this.cutsceneSpawnPositions) gfx.strokeCircle(p.x, p.y, r);
+    }
+    if (tt >= 1) {
+      gfx?.destroy();
+      this.cutsceneSparkleGfx = null;
       this.advanceCutsceneStep();
     }
   }
 
-  // 게임: 호중구 vs 정지 세균. 살아있는 호중구 0 또는 살아있는 세균 0 또는 maxTime 시 종료.
-  private updateCutsceneSpawnNeutrophils(dtReal: number): void {
-    this.cutsceneActionTimer += dtReal;
-    const MAX_TIME = 15;
-    const liveBacteria = this.bacteriaBehavior.getAlive().length;
-    const liveCells = this.whiteCellBehavior.getAlive().length;
-    if (liveBacteria === 0 || liveCells === 0 || this.cutsceneActionTimer >= MAX_TIME) {
-      this.bacteriaBehavior.frozen = false;
-      this.advanceCutsceneStep();
+  // 게임: EntityKind → 해당 시스템의 spawn 메서드 dispatch.
+  //   각 종은 BloodScene 의 spawnNeutrophils/Bacteria 같은 helper 와 동일한 방식.
+  //   bubble / nutrient / antibody 는 별도 처리 (각 시스템에 직접).
+  private spawnByEntityKind(kind: import('../domain/entityControl').EntityKind, x: number, y: number): void {
+    const phase = Math.random() * Math.PI * 2;
+    switch (kind) {
+      case 'neutrophil':       this.whiteCellBehavior.spawn(NEUTROPHIL, x, y, phase); return;
+      case 'neutrophilSuper':  this.whiteCellBehavior.spawn(NEUTROPHIL_SUPER, x, y, phase); return;
+      case 'nk':               this.whiteCellBehavior.spawn(NK_CELL, x, y, phase); return;
+      case 'bcell':            this.whiteCellBehavior.spawn(BCELL, x, y, phase); return;
+      case 'tcell':            this.whiteCellBehavior.spawn(TCELL, x, y, phase); return;
+      case 'bacteria':         this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase); return;
+      case 'bacteriaCommander': this.bacteriaBehavior.spawn(BACTERIA_COMMANDER, x, y, phase); return;
+      case 'macrophage': {
+        // 게임: 대식세포는 바닥 고정 (y 무시 — 시스템이 floorY 강제).
+        const m = new Macrophage(MACROPHAGE, this.cellRenderer, x, this.scale.height - MACROPHAGE.shape.base, phase);
+        this.macrophageSystem.add(m);
+        return;
+      }
+      case 'nutrient': {
+        // 게임: 영양분은 슬롯 인덱스 필요 — 비활성 슬롯 찾아 활성화. 없으면 skip.
+        const slots = this.nutrientSystem.getAllSlots();
+        for (let i = 0; i < slots.length; i++) {
+          if (!slots[i].active) { this.nutrientSystem.spawnAt(i, x, y); return; }
+        }
+        return;
+      }
+      case 'antibody':
+      case 'bubble':
+        // 게임: 컷신에서 직접 spawn 안 함 — B세포 발사 / 풍선 등장은 게임 로직.
+        console.warn('[cutscene] spawn kind not supported via spawn step:', kind);
+        return;
     }
   }
 
-  // 게임: 보강 — 세균 + 커맨더 vs 호중구. 백혈구 (NEUTROPHIL/NK/SUPER) 전멸 시 종료.
-  //   maxTime 30s 안전망 — 호중구가 안 죽으면 자동 진행.
-  private updateCutsceneReinforcement(dtReal: number): void {
-    this.cutsceneActionTimer += dtReal;
-    const MAX_TIME = 30;
-    const liveNeutrophils = this.whiteCellBehavior.getAlive().filter((c) =>
-      c.dnaKind === 'NEUTROPHIL' || c.dnaKind === 'NK_CELL' || c.dnaKind === 'NEUTROPHIL_SUPER',
-    ).length;
-    if (liveNeutrophils === 0 || this.cutsceneActionTimer >= MAX_TIME) {
-      this.advanceCutsceneStep();
+  // 게임: clear step 처리 — 모든 entity 정리 (clean slate). registry 는 유지.
+  //   대상: 백혈구·세균 (살아있음/시체 모두), 대식세포, 영양분, 항체, 페이즈 2 풍선.
+  //   handle destroy + 풀 비움. 다음 step 의 spawn 이 즉시 가능.
+  private applyCutsceneClear(): void {
+    // 백혈구 — 모두 isAbsorbed 후 즉시 정리.
+    for (const c of this.whiteCellBehavior.getAll()) c.isAbsorbed = true;
+    this.whiteCellBehavior.removeAbsorbed();
+    // 세균 — 동일.
+    for (const b of this.bacteriaBehavior.getAll()) b.isAbsorbed = true;
+    this.bacteriaBehavior.removeAbsorbed();
+    // 대식세포 — 별도 클래스. 전용 clearAll.
+    this.macrophageSystem.clearAll();
+    // 영양분 — 모두 비활성 (위치는 보존, active=false). 다음 spawnAt 으로 재활성 가능.
+    this.nutrientSystem.disableAll();
+    // 항체 — isAbsorbed 마킹. AntibodySystem.update 가 다음 프레임에 청소.
+    for (const ab of this.antibodySystem.getAll()) ab.isAbsorbed = true;
+    // 페이즈 2 풍선 — 모두 close (페이드 아웃 후 destroy).
+    for (const bubble of [...this.bubbles]) this.closeBubble(bubble);
+  }
+
+  // 게임: nutrientRegen step 처리 — 영양분 부활 박스 set + frozen 해제 + 초기 활성화.
+  //   options.cx/cy 생략 시 살아있는 백혈구 centroid (없으면 화면 중앙).
+  private applyNutrientRegen(options: import('../cutscenes/types').NutrientRegenOptions): void {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const half = options.half ?? 80;
+    const initialCount = options.initialCount ?? 6;
+    let cx = options.cx;
+    let cy = options.cy;
+    if (cx === undefined || cy === undefined) {
+      const live = this.whiteCellBehavior.getAlive();
+      if (live.length > 0) {
+        cx = cx ?? live.reduce((s, c) => s + c.x, 0) / live.length;
+        cy = cy ?? live.reduce((s, c) => s + c.y, 0) / live.length;
+      } else {
+        cx = cx ?? W / 2;
+        cy = cy ?? H / 2;
+      }
+    }
+    this.nutrientSystem.setSpawnBox({ cx, cy, half });
+    this.nutrientSystem.frozen = false;
+    // 게임: registry 도 동기화 (control('nutrient', { ... }) 로 막혀있을 수도 있음).
+    this.entityRegistry.set('nutrient', { enabled: true, frozen: false });
+    this.nutrientSystem.disableAll();
+    for (let i = 0; i < initialCount; i++) {
+      const x = cx + (Math.random() * 2 - 1) * half;
+      const y = cy + (Math.random() * 2 - 1) * half;
+      this.nutrientSystem.spawnAt(i, x, y);
     }
   }
+
+  // 게임: waitFor step 의 condition 평가 — 게임 상태 기반.
+  //   호중구류 = NEUTROPHIL + NEUTROPHIL_SUPER + NK_CELL (BCELL/TCELL 제외).
+  //   whiteCells 는 살아있는 모든 백혈구 (위 포함 + BCELL/TCELL).
+  private evalWaitCondition(condition: WaitCondition): boolean {
+    switch (condition) {
+      case 'nutrientsConsumed':
+        return this.nutrientSystem.getActiveCount() === 0;
+      case 'bacteriaEliminated':
+        return this.bacteriaBehavior.getAlive().length === 0;
+      case 'neutrophilsEliminated': {
+        const live = this.whiteCellBehavior.getAlive();
+        return live.filter((c) =>
+          c.dnaKind === 'NEUTROPHIL' || c.dnaKind === 'NEUTROPHIL_SUPER' || c.dnaKind === 'NK_CELL',
+        ).length === 0;
+      }
+      case 'whiteCellsEliminated':
+        return this.whiteCellBehavior.getAlive().length === 0;
+    }
+  }
+
+  // 게임: 단계 6 — updateCutsceneSpawn* / updateCutsceneReinforcement 제거.
+  //   intro-script 가 선언적 control/spawn/pause 로 마이그레이션됨. sparkle 같은 시각 효과는
+  //   필요 시 별도 cutscene step 타입 (예: 'effect') 로 추가 가능 — 현재는 단순화.
 
   // 게임: 다음 step 진행 — index++ + applyCutsceneStep. action 종료 공통.
   private advanceCutsceneStep(): void {
@@ -1052,7 +1115,7 @@ export class BloodScene extends Phaser.Scene {
       this.bacteriaBehavior.spawn(slot.dna, x, y, phase);
     } else {
       // 게임: 호중구류 (TCELL/BCELL/NEUTROPHIL/...) 는 모두 WhiteCell 풀.
-      this.whiteCellBehavior.add(new WhiteCell(slot.dna, this.cellRenderer, x, y, phase));
+      this.whiteCellBehavior.spawn(slot.dna, x, y, phase);
     }
     this.beginNextPlacement(this.scale.width, this.scale.height);
   }
@@ -1820,7 +1883,7 @@ export class BloodScene extends Phaser.Scene {
       const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
       const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
       const phase = Math.random() * Math.PI * 2;
-      this.whiteCellBehavior.add(new WhiteCell(NEUTROPHIL, this.cellRenderer, x, y, phase));
+      this.whiteCellBehavior.spawn(NEUTROPHIL, x, y, phase);
     }
   }
 
@@ -1835,7 +1898,8 @@ export class BloodScene extends Phaser.Scene {
       const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
       const phase = Math.random() * Math.PI * 2;
       const b = this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
-      if (i < FORCE_INFECTED_PREFIX) b.setInfected();
+      // 게임: registry enabled=false 인 경우 spawn null. infected 부여 skip.
+      if (b !== null && i < FORCE_INFECTED_PREFIX) b.setInfected();
     }
   }
 
@@ -1879,17 +1943,13 @@ export class BloodScene extends Phaser.Scene {
       return;
     }
 
-    // 게임: 컷신 진행 — 텍스트박스/단어 타이핑/click 처리.
-    //   action 진행 중 cutsceneSimActive=true 면 일반 sim 으로 fall-through (세균/호중구 자동 행동).
-    //   cutsceneSimActive=false (narration 또는 spawnNutrients) 면 sim 정지하되 영양분 렌더링은 필요.
+    // 게임: 컷신 진행 — 텍스트박스/단어 타이핑/click 처리. 단계 6 마이그레이션 후 단순화:
+    //   - updateCutscene 가 step 처리 (narration/control/spawn/pause/end)
+    //   - sim 단계로 fall-through (entity 행동은 control('xxx', { frozen }) 으로 대본이 직접 제어)
+    //   - 단, stage 시간/wave/판정/풍선 등은 컷신 중 skip — endCutscene 에서 stageStartTime 설정 후 진행.
     if (this.phase === 'cutscene') {
       this.updateCutscene(delta / 1000);
       this.fpsText.setText(`FPS: ${this.game.loop.actualFps.toFixed(1)}  [CUTSCENE]`);
-      if (!this.cutsceneSimActive) {
-        // 게임: spawnNutrients 등 sim 정지 액션 — 영양분 (별) 시각만 매 프레임 그림.
-        this.nutrientRenderer.draw(this.nutrientSystem.getAllSlots());
-        return;
-      }
     }
 
     // 게임: 가상 시간 — Phaser this.time.now 무시. dt 에 speedMultiplier 곱하여 빨리감기.
@@ -2000,9 +2060,11 @@ export class BloodScene extends Phaser.Scene {
     //   cleanupAbsorbed 후 호출 — host 가 isAbsorbed=true 면 isDead()=true 로 closeBubble.
     this.updateBubbles(dt);
 
-    // 게임: 9) 시각화
+    // 게임: 9) 시각화 — batch renderer 의 visible 플래그도 registry 반영.
     this.nutrientRenderer.draw(this.nutrientSystem.getAllSlots());
+    this.nutrientRenderer.setVisible(this.entityRegistry.get('nutrient').visible);
     this.antibodyRenderer.draw(this.antibodySystem.getAll());
+    this.antibodyRenderer.setVisible(this.entityRegistry.get('antibody').visible);
     this.shockwaveRenderer.draw(this.shockwaveSystem.getActiveWaves(), t);
 
     // 게임: HUD — 살아있는 것 카운트 + 평균 hp 비율 + 팀 정보 (검수용).
@@ -2061,6 +2123,9 @@ export class BloodScene extends Phaser.Scene {
   //   - 변환 = 호중구 isAbsorbed=true (정리됨) + 같은 자리에 새 종 spawn
   //   - 1/3 씩 균등 분포 (NK / BCELL / SUPER)
   //   - 슈퍼/NK/BCELL/TCELL 등은 진화 X (`dnaKind === 'NEUTROPHIL'` 체크)
+  // 게임: T세포 영역에서 level 5 도달한 호중구 → NK/BCELL/SUPER 중 가중 추첨 진화.
+  //   가중치 = registry.<kind>.spawnProb (디폴트 1 → 1/3 균등). 0 이면 그 종은 후보 제외.
+  //   세 종 모두 spawnProb=0 이면 진화 skip — 호중구 그대로 (cell.isAbsorbed 안 함).
   private evolveNeutrophils(): void {
     const candidates = this.whiteCellBehavior
       .getAlive()
@@ -2069,11 +2134,16 @@ export class BloodScene extends Phaser.Scene {
     for (const cell of candidates) {
       const x = cell.x;
       const y = cell.y;
+      const wNk    = this.entityRegistry.get('nk').spawnProb;
+      const wBcell = this.entityRegistry.get('bcell').spawnProb;
+      const wSuper = this.entityRegistry.get('neutrophilSuper').spawnProb;
+      const total = wNk + wBcell + wSuper;
+      if (total <= 0) continue;  // 모두 0 → 진화 skip, 호중구 그대로
+      const r = Math.random() * total;
+      const dna = r < wNk ? NK_CELL : r < wNk + wBcell ? BCELL : NEUTROPHIL_SUPER;
       cell.isAbsorbed = true;
-      const r = Math.random();
-      const dna = r < 1 / 3 ? NK_CELL : r < 2 / 3 ? BCELL : NEUTROPHIL_SUPER;
       const phase = Math.random() * Math.PI * 2;
-      this.whiteCellBehavior.add(new WhiteCell(dna, this.cellRenderer, x, y, phase));
+      this.whiteCellBehavior.spawn(dna, x, y, phase);
     }
   }
 
@@ -2101,11 +2171,13 @@ export class BloodScene extends Phaser.Scene {
         result.kind === 'super' ? NEUTROPHIL_SUPER :
         NEUTROPHIL;
       const phase = Math.random() * Math.PI * 2;
-      const cell = new WhiteCell(dna, this.cellRenderer, m.x, m.y, phase);
+      const cell = this.whiteCellBehavior.spawn(dna, m.x, m.y, phase);
       // 게임: 대식세포에서 위로 분리되는 효과. 좌우 약간 무작위.
-      cell.vy = -180;
-      cell.vx = (Math.random() - 0.5) * 80;
-      this.whiteCellBehavior.add(cell);
+      //   spawn() 이 null 반환 시 (registry enabled=false) skip.
+      if (cell !== null) {
+        cell.vy = -180;
+        cell.vx = (Math.random() - 0.5) * 80;
+      }
       result = this.macrophageSystem.consumeScoreForProduction();
     }
   }

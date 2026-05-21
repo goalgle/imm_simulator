@@ -15,6 +15,8 @@ import type { CellRenderer } from '../render/CellRenderer';
 import type { DNA, Drives } from '../domain/dna';
 import type { Positioned, Senses } from '../domain/drives';
 import { applyDriveLerp } from './behaviorHelpers';
+import type { EntityRegistry } from '../domain/entityControl';
+import { dnaKindToEntityKind } from '../domain/entityControl';
 
 // 게임: 분열 시 자식 위치 오프셋 (px). 부모와 약간 떨어져 시작.
 const SPAWN_OFFSET = 12;
@@ -46,10 +48,15 @@ export class BacteriaBehaviorSystem {
   //   BloodScene 가 stage restart 시 resetStageCounters() 로 초기화.
   private stageSpawned = 0;
   private stageKilled = 0;
-  // 게임: 컷신 (Session 21) — true 면 모든 세균 vx/vy=0 강제 + 행동 logic skip. 컷신 spawnNeutrophils 액션 동안 set.
+  // 게임: legacy 전역 frozen — EntityRegistry 도입 후에도 호환 유지.
+  //   실제 분기는 (this.frozen OR registry.bacteria.frozen OR registry.bacteriaCommander.frozen) 합산.
+  //   다음 정리 단계 (intro-script 마이그레이션) 후 제거 가능.
   frozen = false;
 
-  constructor(private readonly renderer: CellRenderer) {}
+  constructor(
+    private readonly renderer: CellRenderer,
+    private readonly registry: EntityRegistry,
+  ) {}
 
   resetStageCounters(): void {
     this.stageSpawned = 0;
@@ -86,7 +93,9 @@ export class BacteriaBehaviorSystem {
 
   // 게임: 외부(BloodScene)가 초기/wave/분열 세균을 생성할 때 사용.
   //   매 호출 stageSpawned++ — 별 평가 분모에 사용. 분열도 카운트되어 무한 증식 막을 동기 부여.
-  spawn(dna: DNA, x: number, y: number, phase = 0, initialHp?: number): Bacteria {
+  //   registry.<kind>.enabled === false 면 spawn 무시 + null 반환 (컷신·디버그가 새 등장 차단).
+  spawn(dna: DNA, x: number, y: number, phase = 0, initialHp?: number): Bacteria | null {
+    if (!this.registry.get(dnaKindToEntityKind(dna.kind)).enabled) return null;
     const b = new BacteriaCtor(dna, this.renderer, x, y, phase, initialHp);
     this.add(b);
     this.stageSpawned++;
@@ -121,8 +130,9 @@ export class BacteriaBehaviorSystem {
         b.update(t, dt, bounds);
         continue;
       }
-      // 게임: 컷신 frozen — vx/vy 0 강제 + 행동 결정 skip. 떨림만 유지 (cell.update 호출).
-      if (this.frozen) {
+      // 게임: frozen 분기 — legacy this.frozen OR registry control. 둘 중 하나라도 true 면 정지.
+      const ctrl = this.registry.get(dnaKindToEntityKind(b.dna.kind));
+      if (this.frozen || ctrl.frozen) {
         b.vx = 0;
         b.vy = 0;
         b.update(t, dt, bounds);
@@ -205,8 +215,8 @@ export class BacteriaBehaviorSystem {
         commander: commanderInfo,
       };
 
-      // 게임: 약화된 세균은 추진력도 약화 (hpRatio 비례).
-      const speed = b.dna.behavior.speed * b.hpRatio();
+      // 게임: 약화된 세균은 추진력도 약화 (hpRatio 비례). registry.speedMul 추가 곱셈 (컷신 슬로우 등).
+      const speed = b.dna.behavior.speed * b.hpRatio() * ctrl.speedMul;
       applyDriveLerp(b, driveSet, senses, speed, b.dna.behavior.turnRate, dt);
 
       // 게임: 흡수 판정 — 가장 가까운 edible(영양분/항체)이 absorbRadius 안이면 소비.
@@ -233,10 +243,12 @@ export class BacteriaBehaviorSystem {
     // 게임: 분열 완료된 세균의 자식 생성 (별도 루프 — 반복 중 push 회피).
     //   infected 부모는 분열 안 함 (Bacteria.updateAlive 에서 mitosis 시작 차단).
     //   자식은 부모 dna 상속 (정상 색) + 독립 10% 확률로 infected — 매번 새 주사위.
+    //   registry.<kind>.enabled === false 면 자식 안 만듦 (부모 pendingSpawn 만 reset).
     const newborns: Bacteria[] = [];
     for (const b of this.bacteria) {
       if (b.pendingSpawn) {
         b.pendingSpawn = false;
+        if (!this.registry.get(dnaKindToEntityKind(b.dna.kind)).enabled) continue;
         const angle = Math.random() * Math.PI * 2;
         const childX = b.x + Math.cos(angle) * SPAWN_OFFSET;
         const childY = b.y + Math.sin(angle) * SPAWN_OFFSET;
@@ -250,6 +262,13 @@ export class BacteriaBehaviorSystem {
     for (const child of newborns) {
       this.add(child);
       this.stageSpawned++;
+    }
+
+    // 게임: visible 일괄 토글 — registry.<kind>.visible 따라 handle.setVisible.
+    //   행동/충돌은 별개. 컷신 hide 상태에서도 frozen=true 와 함께 쓰면 완전 정지된 채 안 보임.
+    for (const b of this.bacteria) {
+      const ctrl = this.registry.get(dnaKindToEntityKind(b.dna.kind));
+      b.setVisible(ctrl.visible);
     }
   }
 }

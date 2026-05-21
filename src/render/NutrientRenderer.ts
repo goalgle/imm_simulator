@@ -28,6 +28,11 @@ export class NutrientRenderer {
     }
   }
 
+  // 게임: 화면 표시 토글 — EntityRegistry.nutrient.visible 반영.
+  setVisible(visible: boolean): void {
+    this.gfx.setVisible(visible);
+  }
+
   destroy(): void {
     this.gfx.destroy();
   }

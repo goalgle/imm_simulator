@@ -7,6 +7,7 @@
 // 이 파일은 Phaser 의존 없음.
 
 import type { Nutrient } from '../entities/Nutrient';
+import type { EntityRegistry } from '../domain/entityControl';
 
 // 게임: 영양분 배치 영역. 화면 경계 안쪽 margin 만큼 들여서 가장자리 끼임 방지.
 export type NutrientBounds = {
@@ -31,6 +32,7 @@ export class NutrientSystem {
     count: number,
     private readonly bounds: NutrientBounds,
     private readonly respawnDelaySec: number,
+    private readonly registry: EntityRegistry,
   ) {
     for (let i = 0; i < count; i++) {
       this.nutrients.push(this.makeFreshNutrient());
@@ -72,9 +74,11 @@ export class NutrientSystem {
   }
 
   // 게임: 매 프레임 호출. 부활 시각 도달한 비활성 슬롯을 새 위치로 활성화.
-  //   frozen 중에는 부활 검사 skip — 컷신 동안 영양분 추가 등장 X.
+  //   frozen / registry.nutrient.frozen / !enabled 중 하나라도 면 부활 검사 skip.
   update(t: number): void {
     if (this.frozen) return;
+    const ctrl = this.registry.get('nutrient');
+    if (ctrl.frozen || !ctrl.enabled) return;
     for (const n of this.nutrients) {
       if (!n.active && t >= n.respawnAt) {
         const fresh = this.makeFreshNutrient();
@@ -139,8 +143,9 @@ export class NutrientSystem {
   }
 
   // 게임: 컷신 (Session 21) — 특정 슬롯을 지정 위치에 활성화. 컷신 spawnNutrients 액션 사용.
-  //   슬롯 부족 시 false. 성공 시 true.
+  //   슬롯 부족 시 false. registry.nutrient.enabled === false 면 false (등장 차단).
   spawnAt(index: number, x: number, y: number): boolean {
+    if (!this.registry.get('nutrient').enabled) return false;
     const n = this.nutrients[index];
     if (!n) return false;
     n.x = x;

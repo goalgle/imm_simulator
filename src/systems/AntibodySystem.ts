@@ -8,15 +8,21 @@
 // 세균 흡수는 BacteriaBehaviorSystem 이 처리 (영양분/항체 분기).
 
 import type { Antibody } from '../entities/Antibody';
+import type { EntityRegistry } from '../domain/entityControl';
 
 export class AntibodySystem {
   private antibodies: Antibody[] = [];
 
   // 게임: 정지 항체 최대 개수. 초과 시 가장 오래된 것부터 자동 정리.
   //        무한 누적 방지. 옵션으로 남김 (BloodScene 에서 ANTIBODY_MAX_STOPPED 상수로 주입).
-  constructor(private readonly maxStopped: number = 5) {}
+  constructor(
+    private readonly maxStopped: number = 5,
+    private readonly registry?: EntityRegistry,
+  ) {}
 
   // 게임: B세포가 발사 시 호출.
+  //   registry.antibody.enabled === false 면 spawn 무시 (B세포는 cooldown 만 진행).
+  //   speedMul 은 발사 시점 속도에 곱 — 발사 후 등속 운동이라 매 프레임 적용 X.
   spawn(
     x: number,
     y: number,
@@ -24,11 +30,14 @@ export class AntibodySystem {
     dirY: number,
     armament: { projectileSpeed: number; projectileDamage: number; projectileRange: number },
   ): void {
+    if (this.registry && !this.registry.get('antibody').enabled) return;
+    const speedMul = this.registry?.get('antibody').speedMul ?? 1;
+    const speed = armament.projectileSpeed * speedMul;
     this.antibodies.push({
       x,
       y,
-      vx: dirX * armament.projectileSpeed,
-      vy: dirY * armament.projectileSpeed,
+      vx: dirX * speed,
+      vy: dirY * speed,
       damage: armament.projectileDamage,
       remainingRange: armament.projectileRange,
       isStopped: false,
@@ -37,9 +46,12 @@ export class AntibodySystem {
   }
 
   update(dt: number): void {
+    // 게임: registry.antibody.frozen === true 면 이동 정지 + 청소만.
+    const frozen = this.registry?.get('antibody').frozen ?? false;
     // 1) 위치 적분 + 사거리 만료 시 정지.
     for (const ab of this.antibodies) {
       if (ab.isAbsorbed) continue;
+      if (frozen) continue;
       if (!ab.isStopped) {
         const dx = ab.vx * dt;
         const dy = ab.vy * dt;

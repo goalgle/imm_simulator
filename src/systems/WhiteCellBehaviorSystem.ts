@@ -22,6 +22,8 @@ import { applyDriveLerp } from './behaviorHelpers';
 import { NEUTROPHIL_SUPER } from '../domain/dna';
 import type { CellRenderer } from '../render/CellRenderer';
 import type { AntibodySystem } from './AntibodySystem';
+import type { EntityRegistry } from '../domain/entityControl';
+import { dnaKindToEntityKind } from '../domain/entityControl';
 
 // 게임: 흡수 발동 거리 = baseRadius 합 + 이 padding.
 //   2 → 20 (Session 16) — 분리력(SEPARATION_PADDING=4, strength=400 px/s²)에 밀려나기 전
@@ -47,7 +49,18 @@ export class WhiteCellBehaviorSystem {
   constructor(
     private readonly renderer: CellRenderer,
     private readonly antibodySystem: AntibodySystem,
+    private readonly registry: EntityRegistry,
   ) {}
+
+  // 게임: 외부 (BloodScene) 가 호중구/NK/BCELL/TCELL/SUPER 추가 시 사용.
+  //   registry.<kind>.enabled === false 면 등장 차단 + null 반환. 이외엔 new + add.
+  //   기존 add() 는 fusion 변환 등 시스템 내부용 — enabled 검사 안 함.
+  spawn(dna: import('../domain/dna').DNA, x: number, y: number, phase = 0, initialHp?: number): WhiteCell | null {
+    if (!this.registry.get(dnaKindToEntityKind(dna.kind)).enabled) return null;
+    const cell = new WhiteCellCtor(dna, this.renderer, x, y, phase, initialHp);
+    this.cells.push(cell);
+    return cell;
+  }
 
   add(cell: WhiteCell): void {
     this.cells.push(cell);
@@ -78,6 +91,14 @@ export class WhiteCellBehaviorSystem {
     const sensesAllies = aliveAllies.filter((a) => a.mutation === null);
     for (const cell of this.cells) {
       if (cell.isDead()) continue;
+
+      // 게임: 종족별 frozen — true 면 vx/vy=0 강제 + drives 결정 skip.
+      const ctrl = this.registry.get(dnaKindToEntityKind(cell.dnaKind));
+      if (ctrl.frozen) {
+        cell.vx = 0;
+        cell.vy = 0;
+        continue;
+      }
 
       // 게임: 모든 살아있는 세균 한 번 순회로 nearest 들 동시 산출.
       let nearestPrey: Bacteria | null = null;
@@ -143,7 +164,8 @@ export class WhiteCellBehaviorSystem {
       };
 
       const ratio = Math.max(cell.hpRatio(), cell.dna.behavior.minSpeedRatio);
-      const speed = cell.dna.behavior.speed * ratio;
+      // 게임: registry.speedMul 추가 곱셈 — 컷신 slow-motion / 디버그용.
+      const speed = cell.dna.behavior.speed * ratio * ctrl.speedMul;
       applyDriveLerp(cell, cell.dna.drives, senses, speed, cell.dna.behavior.turnRate, dt);
     }
 
@@ -155,6 +177,13 @@ export class WhiteCellBehaviorSystem {
 
     // 게임: cancer 분열 처리 — pendingCancerSpawn flag 가 set 된 부모마다 자식 1마리 spawn.
     this.processCancerDivision();
+
+    // 게임: visible 일괄 토글 — registry.<kind>.visible 따라 handle.setVisible.
+    //   processFusion 등이 새 cell 추가한 후 호출 — 새 cell 도 같이 처리.
+    for (const cell of this.cells) {
+      const ctrl = this.registry.get(dnaKindToEntityKind(cell.dnaKind));
+      cell.setVisible(ctrl.visible);
+    }
   }
 
   // 게임: cancer 분열 — pendingCancerSpawn flag 가 켜진 부모에서 자식 1마리 spawn.
@@ -166,6 +195,8 @@ export class WhiteCellBehaviorSystem {
     for (const c of this.cells) {
       if (!c.pendingCancerSpawn) continue;
       c.pendingCancerSpawn = false;
+      // 게임: registry.<kind>.enabled === false 면 자식 안 만듦 (부모 flag 만 reset).
+      if (!this.registry.get(dnaKindToEntityKind(c.dnaKind)).enabled) continue;
       const side = Math.random() < 0.5 ? -1 : 1;
       const offsetX = side * c.dna.shape.base * 0.6;
       const phase = Math.random() * Math.PI * 2;
@@ -340,9 +371,12 @@ export class WhiteCellBehaviorSystem {
     }
 
     // 게임: 변환된 슈퍼 호중구 spawn (전체 페어 검사 후 한 번에 — iteration 중 push 회피).
-    for (const pos of transformed) {
-      const phase = Math.random() * Math.PI * 2;
-      this.cells.push(new WhiteCellCtor(NEUTROPHIL_SUPER, this.renderer, pos.x, pos.y, phase));
+    //   registry.neutrophilSuper.enabled === false 면 생성 skip (강한 호중구는 이미 isAbsorbed).
+    if (this.registry.get('neutrophilSuper').enabled) {
+      for (const pos of transformed) {
+        const phase = Math.random() * Math.PI * 2;
+        this.cells.push(new WhiteCellCtor(NEUTROPHIL_SUPER, this.renderer, pos.x, pos.y, phase));
+      }
     }
   }
 }

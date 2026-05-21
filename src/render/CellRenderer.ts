@@ -33,6 +33,8 @@ export interface CellRenderHandle {
   //        구현체는 다음 update() 에서 새 dna 의 color/shape/wave 로 polygon 재생성.
   //        영웅급 PostFX 등 생성자에서 1회 적용된 효과는 갱신되지 않음 (현재 변이 6종은 영웅 변환 없음).
   setDna(dna: DNA): void;
+  // 게임: 화면 표시 토글. false 면 다음 update 부터 화면에 안 그려짐 (행동/충돌은 별개).
+  setVisible(visible: boolean): void;
   // 게임: 매 프레임 호출. t 는 게임 시작 후 경과 시간(초).
   update(t: number): void;
   destroy(): void;

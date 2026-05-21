@@ -169,6 +169,10 @@ class GraphicsHandle implements CellRenderHandle {
     this.gfx.setAlpha(alpha);
   }
 
+  setVisible(visible: boolean): void {
+    this.gfx.setVisible(visible);
+  }
+
   setVisualState(state: VisualState): void {
     this.visual.shock = clamp01(state.shock);
     this.visual.combat = clamp01(state.combat);

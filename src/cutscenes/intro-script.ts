@@ -1,27 +1,37 @@
-// INTRO 컷신 (Session 21). 게임 시작 시 1회. 스테이지 1 시작 전.
+// INTRO 컷신 (Session 21 → 단계 6 마이그레이션). 게임 시작 시 1회. 스테이지 1 시작 전.
 //
-// 대본 형식 — 사용자가 직접 텍스트만 편집할 수 있도록 backtick multi-line 사용.
-// 들여쓰기/빈 줄은 자동 무시. 라인 단위로 단어별 타이핑 → 라인 사이 짧은 pause → 클릭으로 다음 step.
+// 단계 6 (2026-05-21): 기존 action('spawnNutrients') 등 ACTION 핸들러 → 선언적
+//   control() / spawn() / pause() 조합으로 마이그레이션. 대본 자체가 "무엇이 등장하는가" 를 표현.
 //
-// action(...) 호출은 BloodScene 의 ACTION 핸들러 (Stage B 에서 구현). 현재는 placeholder.
+// 대본 형식 — 사용자가 텍스트만 편집할 수 있도록 backtick multi-line. 들여쓰기/빈 줄 자동 무시.
+// 라인 단위로 단어별 타이핑 → 라인 사이 짧은 pause → 클릭으로 다음 step.
 
-import { narration, action, end, type CutsceneStep } from './types';
+import { narration, control, spawn, pause, waitFor, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
 
 export const CUTSCENE_INTRO: CutsceneStep[] = [
+  // 게임: 인트로 진입 시 모든 종 비활성. 각 step 이 필요한 것만 enabled 로.
+  //   control 들은 즉시 적용되고 다음 step 으로 진행 (timer 없음).
+  control('nutrient',  { enabled: false }),
+  control('bacteria',  { enabled: false, frozen: true }),
+  control('neutrophil', { enabled: false }),
+
   narration(`
     캄캄하죠?
+    밤하늘같다고요?
     당신의 혈관입니다.
-    밤하늘이라고요?
-    이또한 당신 안의 우주입니다.
+    이또한 당신 안의 우주죠.
   `),
 
   narration(`
     그리고...
-    우주에는 별이 있죠.
+    우주에는 별이 이렇게.
   `),
 
-  // 영양분 5개 순차 spawn + sparkle 후 잠시 정지.
-  action('spawnNutrients'),
+  // 영양분 5개 — 등장 허용 후 순차 spawn + 1s sparkle 펄스 + 짧은 호흡.
+  //   sparkleSeconds: spawn 완료 후 그 시간만큼 spawn 위치에 노란 원 펄스 (반지름 ↑ alpha ↓).
+  control('nutrient', { enabled: true }),
+  spawn('nutrient', 5, { spread: 60, interval: 0.5, sparkleSeconds: 1.0 }),
+  pause(0.6),
 
   narration(`
     아 물론 여기는 혈관이니 이건 별이 아니라 혈장속 영양분입니다.
@@ -40,22 +50,32 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
     때때로 외부 상처를 통해 세균이 침입할 수 있어요.
   `),
 
-  // 세균 등장 → 영양분 흡수 → 분열 → 잠시 정지.
-  action('spawnBacteria'),
+  // 세균 2마리 — 등장 허용 + frozen 해제 + 화면 중앙 박스에 spawn.
+  //   영양분 5개 모두 흡수/분열될 때까지 대기 (max 15s).
+  control('bacteria', { enabled: true, frozen: false }),
+  spawn('bacteria', 2, { spread: 80 }),
+  waitFor('nutrientsConsumed', 15),
 
   narration(`
     세균은 영양분을 먹으면 증식해요.
-    이렇게 세균들이 마구 증식해서 영양분이 다 사라지면?
+    마구 증식해서 영양분이 다 사라지면?
     네.. 다이어트 성공이죠.
     하지만 세상이 쉽지 않아요.
     당신의 다이어트를 방해하는 백혈구가 여기 등장!
   `),
 
-  // 호중구 등장 → 세균 처치 또는 백혈구 사망 → 잠시 정지.
-  action('spawnNeutrophils'),
+  // 호중구 1마리 — 세균 frozen 다시 켜서 그 사이 도주 차단.
+  //   호중구가 정지된 세균을 모두 잡을 때까지 대기 (max 15s).
+  //   이 시연 동안만 호중구 속도 ×2 — 시연 호흡 단축. 다음 step 전 1.0 으로 복구.
+  control('bacteria', { frozen: true }),
+  control('neutrophil', { enabled: true, speedMul: 2 }),
+  spawn('neutrophil', 1, { spread: 0 }),
+  waitFor('bacteriaEliminated', 15),
+  control('neutrophil', { speedMul: 1 }),
 
   narration(`
-    이렇게 됩니다. 떨어진건 죽은 세포 즉, 고름입니다.
+    떨어진건 죽은 세포로 고름이됩니다.
+    그리고 싸우면 약해져요. 작아지고 느려지죠.
   `),
 
   narration(`
@@ -65,13 +85,30 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
     세균을 좀 더 넣어볼까요?
   `),
 
-  // 세균 5 추가 + 영양분 6개 새 위치 + 호중구 2 추가. 영양분 6개 다 사라지면 종료.
-  action('reinforcement'),
+  // 보강 — 세균 frozen 해제 + 5마리 추가 + 호중구 2마리 추가 + 영양분 박스 부활 활성화.
+  //   세균/호중구가 자유롭게 활동 — 자연 전투 발생.
+  //   nutrientRegen({ half: 80 }): 살아있는 백혈구 centroid 근처 ±80 박스에 영양분 6개 활성화
+  //     + 흡수돼도 같은 박스 안 새 위치에 부활 (frozen 해제). 세균이 영양분 먹으려면 백혈구 영역 진입 필요.
+  //   evolveCommander(2): 2초 후 일반 세균 1마리가 커맨더로 진화 (자가 균형 메커니즘).
+  //   호중구류 (NEUTROPHIL/NK/SUPER) 전멸까지 대기 (max 30s).
+  //   "백혈구가 세균에게 진다" 시연 — max 안에 안 죽어도 30s 후 강제 진행.
+  control('bacteria', { frozen: false }),
+  spawn('bacteria', 5, { spread: 200 }),
+  spawn('neutrophil', 2, { spread: 200 }),
+  nutrientRegen({ half: 80, initialCount: 6 }),
+  evolveCommander(2),
+  waitFor('neutrophilsEliminated', 30),
 
   narration(`
-    세균들은 모이면 리더를 세워요.
-    그리고 리더는 똑똑하죠. 자신들도 백혈구를 이길 수 있다고 판단해요.
+    붉은 세균을 봤나요? 리더입니다.
+    주변 세균들을 조정해요. 카리스마있죠.
+    그리고 감히 호중구에게 공격을 명령해요!
+    개체는 살고싶지만 군집의 결정은 희생도 강요하는 세상의 이치란..
   `),
+
+  // 게임: 화면 정리 + 2초 호흡 — 컷신 → 본 스테이지 전환을 부드럽게.
+  clear(),
+  pause(2),
 
   end(),
 ];

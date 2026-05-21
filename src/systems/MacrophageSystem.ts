@@ -13,6 +13,7 @@
 import type { Macrophage } from '../entities/Macrophage';
 import type { WhiteCell } from '../entities/WhiteCell';
 import type { Bacteria } from '../entities/Bacteria';
+import type { EntityRegistry } from '../domain/entityControl';
 
 // 게임: 점수 정책.
 const SCORE_BACTERIA_CORPSE = 10;
@@ -42,8 +43,18 @@ export class MacrophageSystem {
   // 게임: 호중구 사체 점수 별도 추적. 100 도달 시 비율 판정용.
   private whiteCellScoreInPool = 0;
 
+  // 게임: registry 는 옵션 (기존 호출자 호환). 있으면 frozen/speedMul 분기 적용.
+  constructor(private readonly registry?: EntityRegistry) {}
+
   add(m: Macrophage): void {
+    if (this.registry && !this.registry.get('macrophage').enabled) return;
     this.macrophages.push(m);
+  }
+
+  // 게임: 모든 대식세포 정리 (handle destroy + 풀 비움). 컷신 clear step 등에 사용.
+  clearAll(): void {
+    for (const m of this.macrophages) m.destroy();
+    this.macrophages = [];
   }
 
   getAll(): readonly Macrophage[] {
@@ -70,6 +81,17 @@ export class MacrophageSystem {
     whiteCells: readonly WhiteCell[],
     bacteria: readonly Bacteria[],
   ): void {
+    // 게임: frozen 시 vx=0 강제 + 추적/흡수 skip. speedMul 은 이동 속도에 곱.
+    const ctrl = this.registry?.get('macrophage');
+    if (ctrl?.frozen) {
+      for (const m of this.macrophages) {
+        m.vx = 0;
+        m.update(performance.now() / 1000, dt, floorY);
+        m.setVisible(ctrl.visible);
+      }
+      return;
+    }
+    const speedMul = ctrl?.speedMul ?? 1;
     for (const m of this.macrophages) {
       // 게임: 가장 가까운 침전 시체 찾기 (X 좌표 거리 기준 — Y 는 어차피 바닥).
       let nearest: { x: number; y: number; isWhite: boolean; entity: WhiteCell | Bacteria } | null = null;
@@ -93,7 +115,8 @@ export class MacrophageSystem {
       }
 
       // 게임: 시체 흡수 처리 — 자동/수동 공통. nearest 가 흡수 거리 안이면 즉시 흡수.
-      const speed = m.dna.behavior.speed;
+      //   speed 에 registry.macrophage.speedMul 곱셈 (컷신 슬로우 등).
+      const speed = m.dna.behavior.speed * speedMul;
       const absorbDist = m.dna.shape.base + ABSORB_PADDING;
       const absorbing = nearest !== null && bestDx <= absorbDist;
       if (absorbing) {
@@ -147,24 +170,29 @@ export class MacrophageSystem {
 
       m.update(performance.now() / 1000, dt, floorY);
     }
+
+    // 게임: visible 일괄 토글.
+    const visible = ctrl?.visible ?? true;
+    for (const m of this.macrophages) m.setVisible(visible);
   }
 
   // 게임: 100점 도달 시 호중구 생산. 반환값으로 어떤 종류인지 결정.
-  //   우선순위:
-  //     1. 1/10 확률 → NK 세포 (암살자)
-  //     2. 호중구 사체 점수 ≥ 40 → 슈퍼 호중구
-  //     3. 그 외 → 일반 호중구
-  //   매 호출 시 카운터 -100, 호중구 풀 0 리셋.
+  //   우선순위 (registry.<kind>.spawnProb 곱셈 적용):
+  //     1. NK: 1/10 × registry.nk.spawnProb (디폴트 1 → 10%)
+  //     2. SUPER (호중구 사체 점수 ≥ 40): × registry.neutrophilSuper.spawnProb (디폴트 1 → 100%)
+  //     3. 일반 호중구: × registry.neutrophil.spawnProb
+  //   세 가지 분기 모두 spawnProb=0 으로 막히면 null 반환 (점수 보존 — 다음 호출 시 재시도).
   consumeScoreForProduction(): { kind: 'normal' | 'super' | 'nk' } | null {
     if (this.totalScore < 100) return null;
-    let kind: 'normal' | 'super' | 'nk';
-    if (Math.random() < 0.1) {
-      kind = 'nk';
-    } else if (this.whiteCellScoreInPool >= 40) {
-      kind = 'super';
-    } else {
-      kind = 'normal';
-    }
+    const nkProb = (this.registry?.get('nk').spawnProb ?? 1) * 0.1;
+    const superElig = this.whiteCellScoreInPool >= 40;
+    const superProb = this.registry?.get('neutrophilSuper').spawnProb ?? 1;
+    const normalProb = this.registry?.get('neutrophil').spawnProb ?? 1;
+    let kind: 'normal' | 'super' | 'nk' | null = null;
+    if (Math.random() < nkProb) kind = 'nk';
+    else if (superElig && Math.random() < superProb) kind = 'super';
+    else if (Math.random() < normalProb) kind = 'normal';
+    if (kind === null) return null;  // 모두 skip — 점수 보존
     this.totalScore -= 100;
     this.whiteCellScoreInPool = 0;
     return { kind };

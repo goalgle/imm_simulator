@@ -45,6 +45,11 @@ export class Macrophage {
     this.handle.update(t);
   }
 
+  // 게임: 화면 표시 토글 — 컷신 / 디버그가 가시화 제어. 행동/충돌과 별개.
+  setVisible(visible: boolean): void {
+    this.handle.setVisible(visible);
+  }
+
   destroy(): void {
     this.handle.destroy();
   }

@@ -122,6 +122,12 @@ export abstract class LivingCell {
     this.handle.setPosition(x, y);
   }
 
+  // 게임: 화면 표시 토글 — 컷신 / 디버그가 등장 가시화 제어 시 사용.
+  //   행동/충돌과는 별개 (visible=false 라도 시뮬레이션은 진행).
+  setVisible(visible: boolean): void {
+    this.handle.setVisible(visible);
+  }
+
   destroy(): void {
     this.handle.destroy();
   }
