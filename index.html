@@ -6,9 +6,20 @@
     <title>Immune Simulator</title>
     <style>
       html, body { margin: 0; padding: 0; background: #0a0a0a; overflow: hidden; }
-      body { font-family: ui-monospace, monospace; color: #eee; }
+      body {
+        font-family: ui-monospace, monospace;
+        color: #eee;
+        /* 게임: iOS Safari 의 동적 URL 바 대응.
+           100dvh = dynamic viewport — URL 바 표시/숨김 따라 자동 변경 (Safari 15.4+).
+           fallback (100vh - safe-area-inset-bottom) = 구형 브라우저용 — URL 바 영역만큼 줄임.
+           Phaser RESIZE 모드가 body 크기 따라가므로 캔버스도 함께 변경. */
+        height: 100vh;
+        height: calc(100vh - env(safe-area-inset-bottom, 0px));
+        height: 100dvh;
+        overflow: hidden;
+      }
     </style>
-    <script type="module" crossorigin src="./assets/index-h4FGjN_z.js"></script>
+    <script type="module" crossorigin src="./assets/index-BkXFZZTE.js"></script>
   </head>
   <body>
   </body>
