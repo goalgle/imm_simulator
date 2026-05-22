@@ -60,6 +60,11 @@ const NUTRIENT_MARGIN = 40;
 // 게임: 호중구/세균 spawn 마진 (px) — 화면 가장자리에서 안쪽으로 이만큼 안. (Session 20: 100→30)
 //   개체 base 가 절반으로 줄어 더 가장자리 가까이 spawn 가능. 영양분 마진 (40) 보다 작아도 OK.
 const SPAWN_MARGIN = 30;
+
+// 게임: 모바일 (?mobile) 시 게임 영역 하단 reserve px. iOS Safari URL 바 가림 대비.
+//   effectiveHeight() = scale.height - 이만큼. bounds / spawn / 대식세포 floor 모두 적용.
+//   CSS 100dvh 와 함께 — dvh 가 잡지 못하는 가림 영역까지 안전 마진 확보.
+const BOTTOM_RESERVE_MOBILE = 80;
 const NUTRIENT_RESPAWN_DELAY = 5;
 
 // 게임: 충격파 자원/파동 파라미터.
@@ -365,6 +370,9 @@ export class BloodScene extends Phaser.Scene {
   //   임계 이하면 1 (정상 속도). null = 규칙 없음 (항상 정상).
   //   컷신 종료 (endCutscene) 또는 다른 nutrientRegen step (slowWhenBacteriaAbove 없는) 시 null 로 reset.
   private nutrientRegenRule: { count: number; regenMul: number } | null = null;
+  // 게임: waitForShockwaves step 진입 후 발사된 충격파 카운터. handleRunningTap 의 trySpawn 성공 시 ++.
+  //   step 진입 시 0 reset → 그 후 발사만 카운트.
+  private shockwaveCounter = 0;
   // 게임: sparkle 효과 상태 — spawn step 의 sparkleSeconds > 0 일 때 spawn 완료 후 사용.
   //   positions : spawn 한 위치들 (sparkle 그릴 좌표)
   //   gfx       : 매 프레임 strokeCircle 그리는 Graphics. sparkle 종료 시 destroy.
@@ -428,7 +436,7 @@ export class BloodScene extends Phaser.Scene {
       this.cursors = this.input.keyboard.createCursorKeys();
     }
     const W = this.scale.width;
-    const H = this.scale.height;
+    const H = this.effectiveHeight();
 
     this.cellRenderer = new GraphicsCellRenderer(this);
     this.shockwaveRenderer = new ShockwaveRenderer(this);
@@ -485,33 +493,29 @@ export class BloodScene extends Phaser.Scene {
       }
     });
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (this.phase === 'cutscene') {
-        this.handleCutsceneClick();
-        return;
-      }
-      if (this.phase === 'placing') {
-        this.confirmPlacement(pointer.x, pointer.y);
-        return;
-      }
-      if (this.phase !== 'running') return;
-      // 게임: 모바일 — pointerup 에서 swipe vs 탭 분기. pointerdown 은 시작 좌표 기록만.
-      //   데스크탑 — 기존대로 pointerdown 즉시 발사 (마우스 누름 = 즉각 반응).
-      if (this.isMobile) {
+      // 게임: 모바일 + (cutscene 또는 running) — pointerup 에서 swipe vs 탭 분기.
+      //   pointerdown 은 시작 좌표 기록만. swipe 가 cutscene 진행 중에도 동작 (속도 조절).
+      //   placing 은 즉시 처리 (짧은 탭만 의도).
+      if (this.isMobile && (this.phase === 'cutscene' || this.phase === 'running')) {
         this.touchStartX = pointer.x;
         this.touchStartY = pointer.y;
         this.touchDown = true;
         return;
       }
+      // 데스크탑 또는 placing — 기존 즉시 처리. cutscene 은 step 타입 별 분기.
+      if (this.phase === 'cutscene') { this.handleCutsceneTap(pointer.x, pointer.y); return; }
+      if (this.phase === 'placing') { this.confirmPlacement(pointer.x, pointer.y); return; }
+      if (this.phase !== 'running') return;
       this.handleRunningTap(pointer.x, pointer.y);
     });
-    // 게임: 모바일 swipe 검출 — pointerup 시 거리/방향 판정.
+    // 게임: 모바일 swipe 검출 — pointerup 시 거리/방향 판정. cutscene + running 둘 다.
     //   세로 swipe ↑ = 속도 ↑ (1→2→4), ↓ = 속도 ↓ (4→2→1).
-    //   거리 임계 미달 또는 가로 우세 = 짧은 탭으로 간주 → 기존 충격파/풍선 분기.
+    //   거리 임계 미달 또는 가로 우세 = 짧은 탭 → phase 별 분기 (cutscene click 또는 충격파/풍선).
     this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
       if (!this.isMobile) return;
       if (!this.touchDown) return;
       this.touchDown = false;
-      if (this.phase !== 'running') return;
+      if (this.phase !== 'cutscene' && this.phase !== 'running') return;
       const dx = pointer.x - this.touchStartX;
       const dy = pointer.y - this.touchStartY;
       const SWIPE_MIN_PX = 60;       // 이 거리 이상 + 세로 우세 → swipe
@@ -520,8 +524,9 @@ export class BloodScene extends Phaser.Scene {
         this.bumpSpeed(dy < 0 ? +1 : -1);
         return;
       }
-      // 짧은 탭 — 기존 충격파/풍선 분기 그대로.
-      this.handleRunningTap(pointer.x, pointer.y);
+      // 짧은 탭 — phase 별 처리. cutscene 은 step 타입 별 분기.
+      if (this.phase === 'cutscene') this.handleCutsceneTap(pointer.x, pointer.y);
+      else this.handleRunningTap(pointer.x, pointer.y);
     });
 
     this.add.text(20, 20, 'M7: T세포 + 호중구 진화 (level 5 → NK/B/SUPER)', {
@@ -636,6 +641,7 @@ export class BloodScene extends Phaser.Scene {
 
   // 게임: running phase 의 짧은 탭 — 풍선 영역이면 (개입 모드) 쉴드, 아니면 충격파.
   //   pointerdown (데스크탑) 또는 pointerup swipe 미달 (모바일) 시 호출.
+  //   충격파 발사 성공 시 shockwaveCounter ++. waitForShockwaves step 종료 조건에 사용.
   private handleRunningTap(x: number, y: number): void {
     for (let i = this.bubbles.length - 1; i >= 0; i--) {
       const b = this.bubbles[i];
@@ -644,7 +650,20 @@ export class BloodScene extends Phaser.Scene {
         return;
       }
     }
-    this.shockwaveSystem.trySpawn(x, y, this.gameTime);
+    if (this.shockwaveSystem.trySpawn(x, y, this.gameTime)) {
+      this.shockwaveCounter++;
+    }
+  }
+
+  // 게임: cutscene 중 짧은 탭의 분기 — 현재 step 타입에 따라 다른 동작.
+  //   narration → handleCutsceneClick (다음 라인/step)
+  //   waitForShockwaves → handleRunningTap (충격파 발사)
+  //   그 외 (control/spawn/pause/waitFor/...) → 무시 (자동 진행만)
+  private handleCutsceneTap(x: number, y: number): void {
+    const step = this.cutsceneSteps[this.cutsceneStepIndex];
+    if (!step) return;
+    if (step.type === 'narration') this.handleCutsceneClick();
+    else if (step.type === 'waitForShockwaves') this.handleRunningTap(x, y);
   }
 
   // 게임: 속도 단계 변경 (1× / 2× / 4×). delta=+1 = 한 단계 ↑, -1 = ↓. 경계 clamp.
@@ -654,6 +673,12 @@ export class BloodScene extends Phaser.Scene {
     const cur = STEPS.indexOf(this.speedMultiplier);
     const next = Math.max(0, Math.min(STEPS.length - 1, (cur < 0 ? 0 : cur) + delta));
     this.speedMultiplier = STEPS[next];
+  }
+
+  // 게임: 게임에 실제로 사용할 화면 높이. 모바일 시 BOTTOM_RESERVE_MOBILE 차감.
+  //   bounds / spawn 영역 / 대식세포 floor 모두 이 값 사용. 데스크탑은 scale.height 그대로.
+  private effectiveHeight(): number {
+    return this.scale.height - (this.isMobile ? BOTTOM_RESERVE_MOBILE : 0);
   }
 
   // 게임: 디버그용 — 변이 안 된 살아있는 NEUTROPHIL 후보 중 무작위 선정 → 6 변이 중 균등.
@@ -707,7 +732,7 @@ export class BloodScene extends Phaser.Scene {
   //   위쪽 배치 = 아래쪽 객체 (spawn 되는 호중구/세균/영양분) 가 텍스트 박스 가려지지 X.
   private createCutsceneUI(): void {
     const W = this.scale.width;
-    const H = this.scale.height;
+    const H = this.effectiveHeight();
     const margin = 30;
     const boxH = 260;
     const boxX = margin;
@@ -778,7 +803,7 @@ export class BloodScene extends Phaser.Scene {
   //   호중구는 컷신 중에 spawn 된 게 있을 수 있음 (spawnNeutrophils 액션). 이건 그대로 유지.
   private populateStageStart(): void {
     const W = this.scale.width;
-    const H = this.scale.height;
+    const H = this.effectiveHeight();
     for (let i = 0; i < this.currentStage.startNeutrophils; i++) {
       const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
       const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
@@ -823,7 +848,7 @@ export class BloodScene extends Phaser.Scene {
       this.cutsceneUiText?.setText('');
       this.cutsceneUiHint?.setAlpha(0);
     } else {
-      // 게임: control / spawn / pause — 공통 셋업. 실제 처리는 updateCutscene 분기.
+      // 게임: control / spawn / pause / waitFor / waitForShockwaves / ... — 공통 셋업.
       //   sim 활성/정지는 control('xxx', { frozen }) 으로 대본이 직접 제어.
       this.cutsceneActionTimer = 0;
       this.cutsceneSpawnDone = 0;
@@ -832,6 +857,8 @@ export class BloodScene extends Phaser.Scene {
       // 게임: 이전 step 의 sparkle gfx 가 살아있다면 정리 (방어적).
       this.cutsceneSparkleGfx?.destroy();
       this.cutsceneSparkleGfx = null;
+      // 게임: 충격파 카운터 reset — waitForShockwaves step 진입 시 새로 세기 시작.
+      this.shockwaveCounter = 0;
       this.cutsceneAwaitingClick = false;
       this.hideCutsceneUI();
     }
@@ -873,6 +900,13 @@ export class BloodScene extends Phaser.Scene {
       // 게임: waitFor step — 조건 충족 OR maxSeconds 도달 시 advance.
       this.cutsceneActionTimer += dtReal;
       if (this.evalWaitCondition(step.condition) || this.cutsceneActionTimer >= step.maxSeconds) {
+        this.advanceCutsceneStep();
+      }
+    } else if (step.type === 'waitForShockwaves') {
+      // 게임: 사용자가 충격파 N번 발사 OR maxSeconds 도달 시 advance.
+      //   shockwaveCounter 는 step 진입 시 0 reset 됨 (applyCutsceneStep else 분기).
+      this.cutsceneActionTimer += dtReal;
+      if (this.shockwaveCounter >= step.count || this.cutsceneActionTimer >= step.maxSeconds) {
         this.advanceCutsceneStep();
       }
     } else if (step.type === 'evolveCommander') {
@@ -952,13 +986,14 @@ export class BloodScene extends Phaser.Scene {
     dtReal: number,
   ): void {
     const W = this.scale.width;
-    const H = this.scale.height;
+    const H = this.effectiveHeight();
     const area = step.area ?? {};
     const cx = area.cx ?? W / 2;
     const cy = area.cy ?? H / 2;
     const spread = area.spread ?? 0;
     const interval = area.interval ?? 0;
     const sparkleSeconds = area.sparkleSeconds ?? 0;
+    const infectedChance = area.infectedChance ?? 0;
 
     this.cutsceneActionTimer += dtReal;
 
@@ -969,7 +1004,8 @@ export class BloodScene extends Phaser.Scene {
         for (let i = 0; i < step.count; i++) {
           const x = cx + (Math.random() * 2 - 1) * spread;
           const y = cy + (Math.random() * 2 - 1) * spread;
-          this.spawnByEntityKind(step.kind, x, y);
+          const infected = infectedChance > 0 && Math.random() < infectedChance;
+          this.spawnByEntityKind(step.kind, x, y, { infected });
           this.cutsceneSpawnPositions.push({ x, y });
         }
         this.cutsceneSpawnDone = step.count;
@@ -979,7 +1015,8 @@ export class BloodScene extends Phaser.Scene {
             && this.cutsceneActionTimer >= (this.cutsceneSpawnDone + 1) * interval) {
           const x = cx + (Math.random() * 2 - 1) * spread;
           const y = cy + (Math.random() * 2 - 1) * spread;
-          this.spawnByEntityKind(step.kind, x, y);
+          const infected = infectedChance > 0 && Math.random() < infectedChance;
+          this.spawnByEntityKind(step.kind, x, y, { infected });
           this.cutsceneSpawnPositions.push({ x, y });
           this.cutsceneSpawnDone++;
         }
@@ -1018,7 +1055,13 @@ export class BloodScene extends Phaser.Scene {
   // 게임: EntityKind → 해당 시스템의 spawn 메서드 dispatch.
   //   각 종은 BloodScene 의 spawnNeutrophils/Bacteria 같은 helper 와 동일한 방식.
   //   bubble / nutrient / antibody 는 별도 처리 (각 시스템에 직접).
-  private spawnByEntityKind(kind: import('../domain/entityControl').EntityKind, x: number, y: number): void {
+  //   options.infected: bacteria/bacteriaCommander 에만 의미 — spawn 후 setInfected 호출.
+  private spawnByEntityKind(
+    kind: import('../domain/entityControl').EntityKind,
+    x: number,
+    y: number,
+    options?: { infected?: boolean },
+  ): void {
     const phase = Math.random() * Math.PI * 2;
     switch (kind) {
       case 'neutrophil':       this.whiteCellBehavior.spawn(NEUTROPHIL, x, y, phase); return;
@@ -1026,11 +1069,19 @@ export class BloodScene extends Phaser.Scene {
       case 'nk':               this.whiteCellBehavior.spawn(NK_CELL, x, y, phase); return;
       case 'bcell':            this.whiteCellBehavior.spawn(BCELL, x, y, phase); return;
       case 'tcell':            this.whiteCellBehavior.spawn(TCELL, x, y, phase); return;
-      case 'bacteria':         this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase); return;
-      case 'bacteriaCommander': this.bacteriaBehavior.spawn(BACTERIA_COMMANDER, x, y, phase); return;
+      case 'bacteria': {
+        const b = this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
+        if (b !== null && options?.infected) b.setInfected();
+        return;
+      }
+      case 'bacteriaCommander': {
+        const b = this.bacteriaBehavior.spawn(BACTERIA_COMMANDER, x, y, phase);
+        if (b !== null && options?.infected) b.setInfected();
+        return;
+      }
       case 'macrophage': {
         // 게임: 대식세포는 바닥 고정 (y 무시 — 시스템이 floorY 강제).
-        const m = new Macrophage(MACROPHAGE, this.cellRenderer, x, this.scale.height - MACROPHAGE.shape.base, phase);
+        const m = new Macrophage(MACROPHAGE, this.cellRenderer, x, this.effectiveHeight() - MACROPHAGE.shape.base, phase);
         this.macrophageSystem.add(m);
         return;
       }
@@ -1074,7 +1125,7 @@ export class BloodScene extends Phaser.Scene {
   //   options.cx/cy 생략 시 살아있는 백혈구 centroid (없으면 화면 중앙).
   private applyNutrientRegen(options: import('../cutscenes/types').NutrientRegenOptions): void {
     const W = this.scale.width;
-    const H = this.scale.height;
+    const H = this.effectiveHeight();
     const half = options.half ?? 80;
     const initialCount = options.initialCount ?? 6;
     let cx = options.cx;
@@ -1854,7 +1905,7 @@ export class BloodScene extends Phaser.Scene {
   private processStageWaves(t: number): void {
     const waves = this.currentStage.bacteriaWaves;
     const W = this.scale.width;
-    const H = this.scale.height;
+    const H = this.effectiveHeight();
     while (this.nextWaveIndex < waves.length) {
       const w = waves[this.nextWaveIndex];
       if (t < w.atSec) break;
@@ -1913,7 +1964,7 @@ export class BloodScene extends Phaser.Scene {
     this.stageState = 'resolved';
     console.log('[stage resolved]', result);
     const W = this.scale.width;
-    const H = this.scale.height;
+    const H = this.effectiveHeight();
     const starChars = result.stars >= 1 ? '★'.repeat(result.stars) + '☆'.repeat(3 - result.stars) : '실패';
     const headline =
       result.kind === 'clear' ? '시간 클리어!' :
@@ -1953,7 +2004,7 @@ export class BloodScene extends Phaser.Scene {
   // 게임: 디버그용 호중구 스폰 — 무작위 위치, 100% hp.
   private spawnNeutrophils(count: number): void {
     const W = this.scale.width;
-    const H = this.scale.height;
+    const H = this.effectiveHeight();
     for (let i = 0; i < count; i++) {
       const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
       const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
@@ -1966,7 +2017,7 @@ export class BloodScene extends Phaser.Scene {
   //   분열 시 10% 와는 별개. 사용자 검증용.
   private spawnBacteria(count: number): void {
     const W = this.scale.width;
-    const H = this.scale.height;
+    const H = this.effectiveHeight();
     const FORCE_INFECTED_PREFIX = 2;
     for (let i = 0; i < count; i++) {
       const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
@@ -2036,7 +2087,7 @@ export class BloodScene extends Phaser.Scene {
     const dt = isPlacing ? 0 : dtReal * this.speedMultiplier;
     if (!isPlacing) this.gameTime += dt;
     const t = this.gameTime;
-    const bounds = { width: this.scale.width, height: this.scale.height };
+    const bounds = { width: this.scale.width, height: this.effectiveHeight() };
 
     // 게임: placement 미리보기 — 매 프레임 다시 그려서 마우스 위치/시각 반영.
     if (isPlacing && this.placementHandle !== null) {

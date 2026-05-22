@@ -6,7 +6,7 @@
 // 대본 형식 — 사용자가 텍스트만 편집할 수 있도록 backtick multi-line. 들여쓰기/빈 줄 자동 무시.
 // 라인 단위로 단어별 타이핑 → 라인 사이 짧은 pause → 클릭으로 다음 step.
 
-import { narration, control, spawn, pause, waitFor, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
+import { narration, control, spawn, pause, waitFor, waitForShockwaves, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
 
 export const CUTSCENE_INTRO: CutsceneStep[] = [
   // 게임: 인트로 진입 시 모든 종 비활성. 각 step 이 필요한 것만 enabled 로.
@@ -104,7 +104,7 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   narration(`
     붉은 세균을 봤나요? 리더입니다.
     주변 세균들을 조정해요. 카리스마있죠.
-    그리고 감히 호중구에게 공격을 명령해요!
+    그리고 호중구를 공격하게 해요!
     개체는 살고싶지만 군집의 결정은 희생도 강요하는 세상의 이치란..
   `),
 
@@ -114,9 +114,8 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
 
   narration(`
     바닥에 떨어진 고름은
-    대식세포가 돌다아니며 청소(?) 먹어요.
-    그리고 일부분 양분으로 재활용하죠.
-    그래서 일정량을 먹으면 호중구를 생성해요.
+    대식세포가 돌다아니며 청소해요.
+    그리고 양분으로 재활용하여 호중구를 생성해요.
   `),
 
   // event : 대식세포 소개
@@ -141,7 +140,41 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   narration(`
     주의! 실제로 대식세포는 세포 생산이나 분열을 못해요.
     게임적 허용이라 봐주세요.
-  `),    
+  `),
+
+  clear(),
+
+  narration(`
+    지금까지 멍때리고 보기만 하셨다면
+    속으로 호중구를 응원했나요? 세균을 응원했나요?
+    당연히 호중구를... 응? 아니야??
+    ...
+  `),
+  pause(1),
+  narration(`
+    호중구가 좀 느려서 답답할 수 있어요.
+    화면 어딘가를 툭 쳐보세요. 파동이 생겨요.
+    이름하여 파!동!지?
+    이 파동을 타고 호중구는 좀 더 빠르게 이동할 수 있어요.
+  `),
+
+  // event : 파동 인터렉션 소개
+  // 등장 : 호중구 5, 세균 10, 대식세포 1
+  // 환경 : 파동(충격파) 인터렉션 허용. 영양분 계속 생성(세균 15되면 ½ 리젠). 세균커맨더 등장 허용.
+  //   waitForShockwaves step 동안 화면 탭 = 충격파 발사 (이 step 한정 인터렉션).
+  // 종료 : 사용자가 충격파 6번 이상 발사 (max 60s 안전망).
+  spawn('neutrophil', 5, { spread: 250 }),
+  spawn('bacteria', 10, { spread: 250 }),
+  spawn('macrophage', 1, { spread: 0 }),
+  control('bacteria', { frozen: false }),
+  nutrientRegen({
+    half: 100,
+    initialCount: 6,
+    slowWhenBacteriaAbove: { count: 15, regenMul: 0.5 },
+  }),
+  evolveCommander(3),
+  waitForShockwaves(6, 60),
+
 
   end(),
 ];

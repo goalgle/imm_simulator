@@ -28,18 +28,22 @@
 import type { EntityKind, EntityControl } from '../domain/entityControl';
 
 // 게임: spawn step 의 위치/분포 옵션. 생략 시 화면 중앙 정확 위치, 일괄 spawn.
-//   cx, cy         : 중심 좌표. 생략 시 화면 중앙.
-//   spread         : ±spread 사각 박스 안 무작위. 생략 시 0 = 정확한 위치.
-//   interval       : 순차 spawn 간격 (초). 생략 시 0 = 모두 같은 프레임에.
-//   sparkleSeconds : spawn 완료 후 spawn 위치마다 노란 원 펄스 (반지름 ↑ + alpha ↓).
-//                    그 시간만큼 step 머묾 → 효과 보장. 생략/0 = 효과 없음 + 즉시 advance.
-//                    영양분 등장 "별 반짝임" 시연용. 다른 종에도 적용 가능.
+//   cx, cy          : 중심 좌표. 생략 시 화면 중앙.
+//   spread          : ±spread 사각 박스 안 무작위. 생략 시 0 = 정확한 위치.
+//   interval        : 순차 spawn 간격 (초). 생략 시 0 = 모두 같은 프레임에.
+//   sparkleSeconds  : spawn 완료 후 spawn 위치마다 노란 원 펄스 (반지름 ↑ + alpha ↓).
+//                     그 시간만큼 step 머묾 → 효과 보장. 생략/0 = 효과 없음 + 즉시 advance.
+//                     영양분 등장 "별 반짝임" 시연용. 다른 종에도 적용 가능.
+//   infectedChance  : 0~1. spawn 한 개체가 바이러스 보유 (infected) 일 확률.
+//                     0 (생략) = 모두 정상, 1 = 모두 infected, 0.3 = 약 30% 가 infected.
+//                     bacteria / bacteriaCommander 에만 의미. 다른 종은 무영향.
 export type SpawnArea = {
   cx?: number;
   cy?: number;
   spread?: number;
   interval?: number;
   sparkleSeconds?: number;
+  infectedChance?: number;
 };
 
 // 게임: waitFor step 의 조건 — 게임 상태 기반.
@@ -77,6 +81,7 @@ export type CutsceneStep =
   | { type: 'spawn'; kind: EntityKind; count: number; area?: SpawnArea }
   | { type: 'pause'; seconds: number }
   | { type: 'waitFor'; condition: WaitCondition; maxSeconds: number }
+  | { type: 'waitForShockwaves'; count: number; maxSeconds: number }
   | { type: 'evolveCommander'; afterSeconds: number }
   | { type: 'nutrientRegen'; options: NutrientRegenOptions }
   | { type: 'clear' }
@@ -128,6 +133,14 @@ export function pause(seconds: number): CutsceneStep {
 //   maxSeconds 안전망 — 조건 영영 안 충족돼도 강제 진행 (대본 멈춤 방지).
 export function waitFor(condition: WaitCondition, maxSeconds: number): CutsceneStep {
   return { type: 'waitFor', condition, maxSeconds };
+}
+
+// 게임: 사용자가 충격파 N번 발사하면 다음 step. maxSeconds 안전망.
+//   step 진입 시 카운터 0 reset → 그 후 발사한 것만 카운트.
+//   cutscene 중에도 화면 탭 → 충격파 발사 가능 (이 step 동안만 인터렉션 활성).
+//   다른 step (narration 등) 에선 화면 탭이 평소대로 동작.
+export function waitForShockwaves(count: number, maxSeconds: number): CutsceneStep {
+  return { type: 'waitForShockwaves', count, maxSeconds };
 }
 
 // 게임: 일반 세균 1마리 → 커맨더 자동 진화 트리거. afterSeconds 후 게임 내 진화 발생.
