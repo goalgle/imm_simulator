@@ -76,6 +76,7 @@ export type NutrientRegenOptions = {
 
 export type CutsceneStep =
   | { type: 'narration'; lines: string[] }
+  | { type: 'warning'; lines: string[] }
   | { type: 'action'; kind: string }
   | { type: 'control'; kind: EntityKind; set: Partial<EntityControl> }
   | { type: 'spawn'; kind: EntityKind; count: number; area?: SpawnArea }
@@ -100,6 +101,16 @@ export function narration(text: string): CutsceneStep {
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
   return { type: 'narration', lines };
+}
+
+// 게임: narration 의 강조 변형 — 붉은 굵은 글씨 + 좌우 미세 흔들림. 동작은 narration 과 동일
+//   (단어별 타이핑 + 클릭으로 다음). 시각 효과만 다름. "경고/주의" 톤 멘트에 사용.
+export function warning(text: string): CutsceneStep {
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  return { type: 'warning', lines };
 }
 
 // 게임: 액션 step — (legacy) 코드 핸들러 호출. 새 시퀀스는 control/spawn/pause 권장.

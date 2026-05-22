@@ -6,7 +6,7 @@
 // 대본 형식 — 사용자가 텍스트만 편집할 수 있도록 backtick multi-line. 들여쓰기/빈 줄 자동 무시.
 // 라인 단위로 단어별 타이핑 → 라인 사이 짧은 pause → 클릭으로 다음 step.
 
-import { narration, control, spawn, pause, waitFor, waitForShockwaves, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
+import { narration, warning, control, spawn, pause, waitFor, waitForShockwaves, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
 
 export const CUTSCENE_INTRO: CutsceneStep[] = [
   // 게임: 인트로 진입 시 모든 종 비활성. 각 step 이 필요한 것만 enabled 로.
@@ -137,7 +137,7 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
 
   pause(2),
 
-  narration(`
+  warning(`
     주의! 실제로 대식세포는 세포 생산이나 분열을 못해요.
     게임적 허용이라 봐주세요.
   `),

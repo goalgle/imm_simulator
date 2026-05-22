@@ -358,6 +358,10 @@ export class BloodScene extends Phaser.Scene {
   private cutsceneUiBg: Phaser.GameObjects.Graphics | null = null;
   private cutsceneUiText: Phaser.GameObjects.Text | null = null;
   private cutsceneUiHint: Phaser.GameObjects.Text | null = null;
+  // 게임: warning step 의 흔들림 효과 — base 위치 보존, 매 프레임 ±jitter 오프셋.
+  //   narration 진입 시 base 로 복원, warning 진입 시 색/스타일만 바뀌고 위치는 jitter 가 매 프레임 갱신.
+  private cutsceneTextBaseX = 0;
+  private cutsceneTextBaseY = 0;
   // 게임: 단계 6 — 기존 ACTION 핸들러 멤버들 (cutsceneSimActive / cutsceneNutPhase 등) 제거.
   //   intro-script 가 선언적 control()/spawn()/pause() 로 마이그레이션됨.
   //   sim 활성/정지는 control('xxx', { frozen }) 으로 대본이 직접 제어.
@@ -662,7 +666,7 @@ export class BloodScene extends Phaser.Scene {
   private handleCutsceneTap(x: number, y: number): void {
     const step = this.cutsceneSteps[this.cutsceneStepIndex];
     if (!step) return;
-    if (step.type === 'narration') this.handleCutsceneClick();
+    if (step.type === 'narration' || step.type === 'warning') this.handleCutsceneClick();
     else if (step.type === 'waitForShockwaves') this.handleRunningTap(x, y);
   }
 
@@ -747,7 +751,9 @@ export class BloodScene extends Phaser.Scene {
     bg.setDepth(BUBBLE_DEPTH + 20);
     this.cutsceneUiBg = bg;
 
-    const text = this.add.text(W / 2, boxY + boxH / 2, '', {
+    const textX = W / 2;
+    const textY = boxY + boxH / 2;
+    const text = this.add.text(textX, textY, '', {
       color: '#ffffff',
       fontFamily: 'ui-monospace, monospace',
       fontSize: '20px',
@@ -758,6 +764,8 @@ export class BloodScene extends Phaser.Scene {
     text.setOrigin(0.5, 0.5);
     text.setDepth(BUBBLE_DEPTH + 21);
     this.cutsceneUiText = text;
+    this.cutsceneTextBaseX = textX;
+    this.cutsceneTextBaseY = textY;
 
     const hint = this.add.text(boxX + boxW - 24, boxY + boxH - 16, '▼ 클릭', {
       color: '#88ccff',
@@ -838,7 +846,7 @@ export class BloodScene extends Phaser.Scene {
       this.endCutscene();
       return;
     }
-    if (step.type === 'narration') {
+    if (step.type === 'narration' || step.type === 'warning') {
       this.cutsceneLineIndex = 0;
       this.cutsceneWordIndex = 0;
       this.cutsceneWordTimer = CUTSCENE_WORD_INTERVAL;
@@ -847,6 +855,18 @@ export class BloodScene extends Phaser.Scene {
       this.showCutsceneUI();
       this.cutsceneUiText?.setText('');
       this.cutsceneUiHint?.setAlpha(0);
+      // 게임: narration ↔ warning 전환 시 색/굵기/위치 복원. warning 은 jitter 가 매 프레임 갱신.
+      if (this.cutsceneUiText) {
+        if (step.type === 'warning') {
+          this.cutsceneUiText.setColor('#ff5566');
+          this.cutsceneUiText.setFontStyle('bold');
+        } else {
+          this.cutsceneUiText.setColor('#ffffff');
+          this.cutsceneUiText.setFontStyle('normal');
+          this.cutsceneUiText.x = this.cutsceneTextBaseX;
+          this.cutsceneUiText.y = this.cutsceneTextBaseY;
+        }
+      }
     } else {
       // 게임: control / spawn / pause / waitFor / waitForShockwaves / ... — 공통 셋업.
       //   sim 활성/정지는 control('xxx', { frozen }) 으로 대본이 직접 제어.
@@ -885,6 +905,15 @@ export class BloodScene extends Phaser.Scene {
 
     if (step.type === 'narration') {
       this.updateCutsceneNarration(step.lines, dtReal);
+    } else if (step.type === 'warning') {
+      this.updateCutsceneNarration(step.lines, dtReal);
+      // 게임: warning 중에는 매 프레임 ±1.5px 무작위 jitter — "흔들리는 경고" 톤.
+      //   awaitingClick 동안도 계속 흔들림 (위협감 유지). 다음 step 진입 시 base 로 복원됨.
+      if (this.cutsceneUiText) {
+        const amp = 1.5;
+        this.cutsceneUiText.x = this.cutsceneTextBaseX + (Math.random() * 2 - 1) * amp;
+        this.cutsceneUiText.y = this.cutsceneTextBaseY + (Math.random() * 2 - 1) * amp;
+      }
     } else if (step.type === 'control') {
       // 게임: control step — registry 갱신 즉시 (1프레임) 후 다음 step. timer 없음.
       this.entityRegistry.set(step.kind, step.set);
@@ -1191,7 +1220,7 @@ export class BloodScene extends Phaser.Scene {
   private handleCutsceneClick(): void {
     if (this.cutsceneStepIndex >= this.cutsceneSteps.length) return;
     const step = this.cutsceneSteps[this.cutsceneStepIndex];
-    if (step.type !== 'narration') return;
+    if (step.type !== 'narration' && step.type !== 'warning') return;
 
     if (!this.cutsceneAwaitingClick) {
       // 게임: 즉시 모두 표시 — 모든 라인 펼침.
