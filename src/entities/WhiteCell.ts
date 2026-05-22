@@ -107,6 +107,9 @@ export class WhiteCell extends LivingCell {
     initialHp?: number,
   ) {
     super(dna, renderer, x, y, phase, initialHp);
+    // 게임: 백혈구는 전투 중에도 색이 변하지 않음. combat 채널의 채도/떨림 효과는 유지,
+    //   hue lerp 만 비활성. NEUTROPHIL/SUPER/NK_CELL/BCELL/TCELL 모두 WhiteCell 인스턴스라 일괄 적용.
+    this.combatHueScale = 0;
   }
 
   applyShockImpulse(amount: number): void {

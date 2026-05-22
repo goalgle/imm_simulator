@@ -44,6 +44,9 @@ export abstract class LivingCell {
   vx = 0;
   vy = 0;
   protected combatResponse = 0;
+  // 게임: combat 자극 시 hue lerp 강도 (0~1). 1 = 빨강쪽으로 변색 (기본, 세균 등).
+  //   0 = 색 유지 (백혈구 — WhiteCell 생성자에서 0 으로 override). 채도/떨림은 별개로 유지.
+  protected combatHueScale = 1;
   protected hp: number;
   // 게임: 대식세포가 흡수했음을 표시. BloodScene 이 매 프레임 끝에 청소.
   isAbsorbed = false;
@@ -187,6 +190,7 @@ export abstract class LivingCell {
     this.handle.setVisualState({
       shock: options.shock ?? 0,
       combat: this.combatResponse,
+      combatHueScale: this.combatHueScale,
       life: 1,
     });
     this.handle.setPosition(this.x, this.y);

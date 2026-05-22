@@ -120,7 +120,7 @@ class GraphicsHandle implements CellRenderHandle {
   private gfx: Phaser.GameObjects.Graphics;
   private dna: DNA;
   private phase = 0;
-  private visual: VisualState = { shock: 0, combat: 0, life: 1 };
+  private visual: VisualState = { shock: 0, combat: 0, combatHueScale: 1, life: 1 };
   private buffer: Point[];
   // 게임: 보조 buffer 두 개. 매 프레임 buffer 를 스케일/오프셋해서 갱신.
   //        스타일별로 의미가 다름 (A: body/highlight, B: halo→body 재사용/inner, C: cellshade).
@@ -176,6 +176,8 @@ class GraphicsHandle implements CellRenderHandle {
   setVisualState(state: VisualState): void {
     this.visual.shock = clamp01(state.shock);
     this.visual.combat = clamp01(state.combat);
+    // 게임: combatHueScale 생략 시 1 (기존 동작 — 빨강쪽 lerp). 0 = hue 변화 없음.
+    this.visual.combatHueScale = clamp01(state.combatHueScale ?? 1);
     this.visual.life = clamp01(state.life);
   }
 
@@ -189,10 +191,12 @@ class GraphicsHandle implements CellRenderHandle {
   update(t: number): void {
     const c = this.dna.color;
     const { shock, combat, life } = this.visual;
+    const combatHueScale = this.visual.combatHueScale ?? 1;
 
     // 게임: hue — 평소 base, 전투 활성도에 따라 빨강(0°) 쪽으로 lerp.
     //        wrap-around 고려 안 함 — 빨강은 0° 라 단방향 lerp 으로 충분.
-    const h = c.h + (COMBAT_TARGET_HUE - c.h) * (combat * COMBAT_HUE_PULL);
+    //        combatHueScale=0 (백혈구) 면 lerp 비활성 — 채도/떨림은 그대로, 색만 유지.
+    const h = c.h + (COMBAT_TARGET_HUE - c.h) * (combat * combatHueScale * COMBAT_HUE_PULL);
 
     // 게임: 채도 — base + shock + combat 부스트, 그러나 life 곱 (죽으면 0).
     const sRaw = c.s + SHOCK_S_BOOST * shock + COMBAT_S_BOOST * combat;

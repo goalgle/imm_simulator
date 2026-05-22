@@ -9,11 +9,14 @@ import type { DNA } from '../domain/dna';
 
 // 게임: 시각 자극 채널. 엔티티가 매 프레임 통보. 렌더러가 합성하여 색/형태에 반영.
 //   shock  : 충격파 임펄스 — 자기 색이 진해짐 (채도 ↑, 명도 ↓)
-//   combat : 적과 접촉 — 색조가 빨강 쪽으로 lerp (다른 색이 됨)
+//   combat : 적과 접촉 — 채도 ↑ + 떨림/흔들림 ↑. hue lerp 는 combatHueScale 분리.
+//   combatHueScale : combat → hue lerp 강도 배수 (0~1, 생략 시 1). 0 = hue 변화 없음
+//        (백혈구는 0 — 전투해도 자기 색 유지. 세균은 생략 = 1 — 빨강쪽으로 변색).
 //   life   : 0~1 (1=정상, 0=사망). 0 이면 채도 0 (회색) + 형태 떨림 정지.
 export type VisualState = {
   shock: number;
   combat: number;
+  combatHueScale?: number;
   life: number;
 };
 
