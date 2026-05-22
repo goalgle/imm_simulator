@@ -27,6 +27,7 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
     우주에는 별이 이렇게.
   `),
 
+  // event : 영양분 소개
   // 영양분 5개 — 등장 허용 후 순차 spawn + 1s sparkle 펄스 + 짧은 호흡.
   //   sparkleSeconds: spawn 완료 후 그 시간만큼 spawn 위치에 노란 원 펄스 (반지름 ↑ alpha ↓).
   control('nutrient', { enabled: true }),
@@ -50,6 +51,7 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
     때때로 외부 상처를 통해 세균이 침입할 수 있어요.
   `),
 
+  // event : 세균 소개  
   // 세균 2마리 — 등장 허용 + frozen 해제 + 화면 중앙 박스에 spawn.
   //   영양분 5개 모두 흡수/분열될 때까지 대기 (max 15s).
   control('bacteria', { enabled: true, frozen: false }),
@@ -109,6 +111,37 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   // 게임: 화면 정리 + 2초 호흡 — 컷신 → 본 스테이지 전환을 부드럽게.
   clear(),
   pause(2),
+
+  narration(`
+    바닥에 떨어진 고름은
+    대식세포가 돌다아니며 청소(?) 먹어요.
+    그리고 일부분 양분으로 재활용하죠.
+    그래서 일정량을 먹으면 호중구를 생성해요.
+  `),
+
+  // event : 대식세포 소개
+  // 등장 : 호중구 7, 세균 15, 대식세포 1
+  // 환경 : 세균커맨더 허용, 영양분 계속 생성, 대식세포의 세포 생성 허용
+  // 종료 : 호중구 전멸까지 대기 (max 60s).
+  spawn('neutrophil', 7, { spread: 300 }),
+  spawn('bacteria', 15, { spread: 300 }),
+  spawn('macrophage', 1, { spread: 0 }),
+  control('bacteria', { frozen: false }),
+  // 세균 20마리 이상 시 영양분 리젠 ½ (부활 간격 2배) — 분열 폭주 억제.
+  nutrientRegen({
+    half: 120,
+    initialCount: 8,
+    slowWhenBacteriaAbove: { count: 20, regenMul: 0.5 },
+  }),
+  evolveCommander(3), // 3초 후 일반 세균 1마리 → 커맨더 자연 진화 트리거
+  waitFor('whiteCellsEliminated', 60),
+
+  pause(2),
+
+  narration(`
+    주의! 실제로 대식세포는 세포 생산이나 분열을 못해요.
+    게임적 허용이라 봐주세요.
+  `),    
 
   end(),
 ];

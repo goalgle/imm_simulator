@@ -57,13 +57,17 @@ export type WaitCondition =
 //   cx, cy        : 부활 박스 중심. 생략 시 살아있는 백혈구 centroid (없으면 화면 중앙).
 //   half          : ±half 사각 박스. 생략 시 80.
 //   initialCount  : 즉시 활성화 슬롯 수. 생략 시 6.
-//   followWhiteCells : true 면 매 프레임 centroid 재계산 (이동 추적). false/생략 = 시작 시 한 번만.
-//                      현재는 시작 시점 1회만 — 추후 확장.
+//   slowWhenBacteriaAbove : 동적 부활 속도 조절. 살아있는 세균 수가 count 이상이면
+//                            consume 시 respawnDelay 가 (1 / regenMul) 배.
+//                            예: { count: 20, regenMul: 0.5 } = 세균 ≥ 20 시 리젠 속도 절반 (부활 간격 2배).
+//                            세균 수가 임계 이하로 떨어지면 자동으로 정상 속도 복구.
+//                            컷신 종료 시 또는 다른 nutrientRegen 호출 시 reset.
 export type NutrientRegenOptions = {
   cx?: number;
   cy?: number;
   half?: number;
   initialCount?: number;
+  slowWhenBacteriaAbove?: { count: number; regenMul: number };
 };
 
 export type CutsceneStep =

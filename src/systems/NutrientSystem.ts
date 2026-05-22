@@ -24,6 +24,9 @@ export class NutrientSystem {
   // 게임: 컷신 (Session 21) — frozen=true 면 update() 부활 검사 skip + consume 도 respawnAt 무한대.
   //   컷신 도중 세균이 영양분 흡수 시 자동 부활 차단 — 지정된 5개만 등장.
   frozen = false;
+  // 게임: 부활 지연 배수 (디폴트 1). consume 시 effectiveDelay = respawnDelaySec × respawnDelayMul.
+  //   2.0 = 부활이 2배 느림 (리젠 ½). 0.5 = 2배 빠름. 동적 조절 가능 — BloodScene 의 매 프레임 검사.
+  respawnDelayMul = 1;
   // 게임: 영양분 부활 위치 override (Session 21). null 이면 화면 전체 무작위, 설정 시 박스 안 무작위.
   //   컷신 reinforcement 단계에서 백혈구 centroid 근처로 제한 — 세균이 백혈구 영역에 들어와야 먹음.
   private spawnBox: { cx: number; cy: number; half: number } | null = null;
@@ -64,13 +67,14 @@ export class NutrientSystem {
     };
   }
 
-  // 게임: 인덱스로 영양분 1개 소비. 슬롯은 비활성화되고 respawnDelaySec 후에 부활 예약.
+  // 게임: 인덱스로 영양분 1개 소비. 슬롯은 비활성화되고 respawnDelaySec × respawnDelayMul 후에 부활 예약.
   //   frozen 중에는 respawnAt 을 무한대로 — 컷신 동안 부활 차단.
+  //   respawnDelayMul 이 동적으로 변경되어도 다음 consume 부터 반영 (이미 예약된 슬롯은 그대로).
   consume(index: number, t: number): void {
     const n = this.nutrients[index];
     if (!n || !n.active) return;
     n.active = false;
-    n.respawnAt = this.frozen ? Number.MAX_SAFE_INTEGER : t + this.respawnDelaySec;
+    n.respawnAt = this.frozen ? Number.MAX_SAFE_INTEGER : t + this.respawnDelaySec * this.respawnDelayMul;
   }
 
   // 게임: 매 프레임 호출. 부활 시각 도달한 비활성 슬롯을 새 위치로 활성화.

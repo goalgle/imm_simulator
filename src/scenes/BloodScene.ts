@@ -306,7 +306,16 @@ export class BloodScene extends Phaser.Scene {
   private controlsText!: Phaser.GameObjects.Text;
   // 게임: 상단 디버그 텍스트 표시 여부. [H] 키 토글. 기본 true (개발/검수 편의).
   //   영향 대상: hudText, fpsText, controlsText, debugHud. stageHudText 는 게임플레이용이라 제외.
+  //   ?mobile 접속 시 create 에서 false 로 강제 (모바일 화면 점유 절약).
   private debugVisible = true;
+  // 게임: 모바일 모드 (?mobile 또는 ?portrait URL 파라미터). create 에서 set.
+  //   영향: 디버그 텍스트 기본 OFF + pointerup swipe 로 속도 변경 (탭은 충격파 그대로).
+  private isMobile = false;
+  // 게임: 모바일 swipe 검출용 — pointerdown 시작 위치 + 진행 중 flag.
+  //   pointerup 시 거리/방향 검사 → swipe 면 속도 변경, 아니면 짧은 탭 (충격파/풍선) 분기.
+  private touchStartX = 0;
+  private touchStartY = 0;
+  private touchDown = false;
   private placementText!: Phaser.GameObjects.Text;
   // 게임: 스테이지 HUD (Session 20) — 화면 상단 중앙 카운트다운 + 세균 진행.
   private stageHudText!: Phaser.GameObjects.Text;
@@ -351,6 +360,11 @@ export class BloodScene extends Phaser.Scene {
   // 게임: 선언적 spawn step 의 진행 카운터 (단계 5). 현재 step 에서 이미 처리한 개수.
   //   step 시작 시 0 으로 reset. interval>0 마다 +1, count 도달 시 sparkle phase 또는 advance.
   private cutsceneSpawnDone = 0;
+  // 게임: 영양분 동적 부활 속도 조절 규칙. nutrientRegen step 의 slowWhenBacteriaAbove 에 의해 set.
+  //   매 프레임 살아있는 세균 수 검사 → 임계 이상이면 NutrientSystem.respawnDelayMul = 1/regenMul.
+  //   임계 이하면 1 (정상 속도). null = 규칙 없음 (항상 정상).
+  //   컷신 종료 (endCutscene) 또는 다른 nutrientRegen step (slowWhenBacteriaAbove 없는) 시 null 로 reset.
+  private nutrientRegenRule: { count: number; regenMul: number } | null = null;
   // 게임: sparkle 효과 상태 — spawn step 의 sparkleSeconds > 0 일 때 spawn 완료 후 사용.
   //   positions : spawn 한 위치들 (sparkle 그릴 좌표)
   //   gfx       : 매 프레임 strokeCircle 그리는 Graphics. sparkle 종료 시 destroy.
@@ -395,6 +409,11 @@ export class BloodScene extends Phaser.Scene {
 
   // Phaser: 씬 시작 시 1회 호출.
   create(): void {
+    // 게임: 모바일 모드 감지 — URL 파라미터 ?mobile 또는 ?portrait.
+    //   영향: 디버그 텍스트 기본 OFF, pointer 가 swipe 검출.
+    const params = new URLSearchParams(window.location.search);
+    this.isMobile = params.has('mobile') || params.has('portrait');
+    this.touchDown = false;
     // 게임: 리셋 시 가상 시간 초기화 (scene.restart() 가 같은 인스턴스 재사용).
     this.gameTime = 0;
     this.speedMultiplier = 1;
@@ -475,16 +494,34 @@ export class BloodScene extends Phaser.Scene {
         return;
       }
       if (this.phase !== 'running') return;
-      // 게임: 풍선 영역 클릭 = (개입 모드) 그 풍선 쉴드 발동. (관전 모드) 무시 + 충격파도 X.
-      //   외부 클릭 = 충격파 그대로. 여러 풍선 겹치면 위 풍선 (배열 뒤쪽) 우선.
-      for (let i = this.bubbles.length - 1; i >= 0; i--) {
-        const b = this.bubbles[i];
-        if (this.isPointInBubble(pointer.x, pointer.y, b)) {
-          if (this.interactive) this.tryActivateBubbleShield(b);
-          return;
-        }
+      // 게임: 모바일 — pointerup 에서 swipe vs 탭 분기. pointerdown 은 시작 좌표 기록만.
+      //   데스크탑 — 기존대로 pointerdown 즉시 발사 (마우스 누름 = 즉각 반응).
+      if (this.isMobile) {
+        this.touchStartX = pointer.x;
+        this.touchStartY = pointer.y;
+        this.touchDown = true;
+        return;
       }
-      this.shockwaveSystem.trySpawn(pointer.x, pointer.y, this.gameTime);
+      this.handleRunningTap(pointer.x, pointer.y);
+    });
+    // 게임: 모바일 swipe 검출 — pointerup 시 거리/방향 판정.
+    //   세로 swipe ↑ = 속도 ↑ (1→2→4), ↓ = 속도 ↓ (4→2→1).
+    //   거리 임계 미달 또는 가로 우세 = 짧은 탭으로 간주 → 기존 충격파/풍선 분기.
+    this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      if (!this.isMobile) return;
+      if (!this.touchDown) return;
+      this.touchDown = false;
+      if (this.phase !== 'running') return;
+      const dx = pointer.x - this.touchStartX;
+      const dy = pointer.y - this.touchStartY;
+      const SWIPE_MIN_PX = 60;       // 이 거리 이상 + 세로 우세 → swipe
+      const SWIPE_VERT_RATIO = 1.5;  // |dy| 가 |dx| × 이 비율 초과해야 세로 swipe
+      if (Math.abs(dy) >= SWIPE_MIN_PX && Math.abs(dy) > Math.abs(dx) * SWIPE_VERT_RATIO) {
+        this.bumpSpeed(dy < 0 ? +1 : -1);
+        return;
+      }
+      // 짧은 탭 — 기존 충격파/풍선 분기 그대로.
+      this.handleRunningTap(pointer.x, pointer.y);
     });
 
     this.add.text(20, 20, 'M7: T세포 + 호중구 진화 (level 5 → NK/B/SUPER)', {
@@ -513,6 +550,11 @@ export class BloodScene extends Phaser.Scene {
       fontFamily: 'ui-monospace, monospace',
       fontSize: '12px',
     });
+    // 게임: 모바일 모드 — 디버그 텍스트 4개 기본 OFF (화면 점유 절약). [H] 키는 그대로 동작.
+    if (this.isMobile) {
+      this.debugVisible = false;
+      this.applyDebugVisible();
+    }
     // 게임: 스테이지 카운트다운 HUD — 화면 상단 중앙. 시간 mm:ss + 세균 진행 표시.
     this.stageHudText = this.add.text(W / 2, 24, '', {
       color: '#ffffff',
@@ -581,10 +623,37 @@ export class BloodScene extends Phaser.Scene {
   // 게임: 상단 디버그 텍스트 일괄 토글. 게임플레이 HUD (스테이지 카운트다운) 는 제외.
   private toggleDebugVisible(): void {
     this.debugVisible = !this.debugVisible;
+    this.applyDebugVisible();
+  }
+
+  // 게임: debugVisible 값을 4개 텍스트에 일괄 반영. ?mobile 초기 OFF 도 이걸로.
+  private applyDebugVisible(): void {
     this.hudText.setVisible(this.debugVisible);
     this.fpsText.setVisible(this.debugVisible);
     this.controlsText.setVisible(this.debugVisible);
     this.debugHud.setVisible(this.debugVisible);
+  }
+
+  // 게임: running phase 의 짧은 탭 — 풍선 영역이면 (개입 모드) 쉴드, 아니면 충격파.
+  //   pointerdown (데스크탑) 또는 pointerup swipe 미달 (모바일) 시 호출.
+  private handleRunningTap(x: number, y: number): void {
+    for (let i = this.bubbles.length - 1; i >= 0; i--) {
+      const b = this.bubbles[i];
+      if (this.isPointInBubble(x, y, b)) {
+        if (this.interactive) this.tryActivateBubbleShield(b);
+        return;
+      }
+    }
+    this.shockwaveSystem.trySpawn(x, y, this.gameTime);
+  }
+
+  // 게임: 속도 단계 변경 (1× / 2× / 4×). delta=+1 = 한 단계 ↑, -1 = ↓. 경계 clamp.
+  //   모바일 swipe / 키 [1/2/3] 양쪽에서 사용 가능 (현재는 swipe 만).
+  private bumpSpeed(delta: number): void {
+    const STEPS = [1, 2, 4];
+    const cur = STEPS.indexOf(this.speedMultiplier);
+    const next = Math.max(0, Math.min(STEPS.length - 1, (cur < 0 ? 0 : cur) + delta));
+    this.speedMultiplier = STEPS[next];
   }
 
   // 게임: 디버그용 — 변이 안 된 살아있는 NEUTROPHIL 후보 중 무작위 선정 → 6 변이 중 균등.
@@ -697,7 +766,9 @@ export class BloodScene extends Phaser.Scene {
     this.bacteriaBehavior.frozen = false;  // legacy flag — 다음 정리 단계에 제거.
     this.nutrientSystem.setSpawnBox(null);  // 화면 전체 부활 영역 복원.
     this.nutrientSystem.frozen = false;
+    this.nutrientSystem.respawnDelayMul = 1;  // 동적 조절 해제 (정상 속도).
     this.nutrientSystem.enableAll();
+    this.nutrientRegenRule = null;
     this.populateStageStart();
     this.beginNextPlacement(this.scale.width, this.scale.height);
   }
@@ -1028,6 +1099,10 @@ export class BloodScene extends Phaser.Scene {
       const y = cy + (Math.random() * 2 - 1) * half;
       this.nutrientSystem.spawnAt(i, x, y);
     }
+    // 게임: 동적 리젠 조절 규칙 갱신 — set 됐으면 매 프레임 검사 시작, 없으면 reset.
+    //   기존 rule 도 함께 reset (다른 nutrientRegen 호출 시 이전 규칙 누적 X).
+    this.nutrientRegenRule = options.slowWhenBacteriaAbove ?? null;
+    if (this.nutrientRegenRule === null) this.nutrientSystem.respawnDelayMul = 1;
   }
 
   // 게임: waitFor step 의 condition 평가 — 게임 상태 기반.
@@ -2050,6 +2125,13 @@ export class BloodScene extends Phaser.Scene {
     //   placement / cutscene 단계는 stage 진행 X. running 일 때만 stage logic 호출.
     //   stage 시간 = gameTime - stageStartTime (cutscene 중 gameTime 진행되므로).
     this.bacteriaBehavior.pollKilled();
+    // 게임: 영양분 동적 리젠 조절 — 살아있는 세균 수 vs 임계 비교, NutrientSystem.respawnDelayMul 갱신.
+    //   세균 ≥ rule.count → mul = 1/regenMul (느림). 그 외 → 1 (정상).
+    if (this.nutrientRegenRule !== null) {
+      const liveBac = this.bacteriaBehavior.getAlive().length;
+      const above = liveBac >= this.nutrientRegenRule.count;
+      this.nutrientSystem.respawnDelayMul = above ? (1 / this.nutrientRegenRule.regenMul) : 1;
+    }
     if (this.phase === 'running') {
       const stageT = this.gameTime - this.stageStartTime;
       this.processStageWaves(stageT);
