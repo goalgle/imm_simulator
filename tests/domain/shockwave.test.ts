@@ -82,6 +82,20 @@ describe('shockwaveImpulse', () => {
     expect(up.dvx).toBeCloseTo(0, 5);
   });
 
+  it('링에서 멀어질수록 제곱으로 감쇠 (선형보다 가파름)', () => {
+    // 게임: bw=30 → 링 위 = 1.0, 링에서 ±15 = 0.25 (선형이었으면 0.5)
+    const wave = baseWave({ duration: 2.0, power: 100, bandwidth: 30 });
+    const t = 0.5;
+    const radius = shockwaveRadius(wave, t); // 100
+    // 링 위 (dist=radius)
+    const onRing = shockwaveImpulse(wave, wave.x + radius, wave.y, t);
+    // 링에서 15px 안쪽 (dist=radius-15) — bw 의 절반 거리
+    const half = shockwaveImpulse(wave, wave.x + radius - 15, wave.y, t);
+    // 제곱 falloff: half 의 magnitude 가 onRing 의 약 1/4 (선형이면 1/2)
+    const ratio = Math.abs(half.dvx) / Math.abs(onRing.dvx);
+    expect(ratio).toBeCloseTo(0.25, 2);
+  });
+
   it('파동이 늙을수록 임펄스가 약해짐 (시간 감쇠)', () => {
     const wave = baseWave({ duration: 1.0 });
     // 같은 상대 위치(링 위)에서 t=0.1 vs t=0.9 비교

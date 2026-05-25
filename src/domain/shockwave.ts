@@ -52,8 +52,11 @@ export function shockwaveImpulse(
   const distFromRing = Math.abs(dist - radius);
   if (distFromRing > wave.bandwidth) return { dvx: 0, dvy: 0 };
 
-  // 게임: 링 중심에서 멀어질수록 영향 ↓ (선형). 1 = 정확히 링 위.
-  const ringFactor = 1 - distFromRing / wave.bandwidth;
+  // 게임: 링 중심에서 멀어질수록 영향 ↓ (제곱 falloff). 1 = 정확히 링 위.
+  //   선형 (1 - d/bw) 은 너무 균일하게 느껴졌음 → 제곱으로 가까운 링에 힘 집중.
+  //   예: 거리 bw/2 시 선형 0.5 → 제곱 0.25 (절반의 절반). "파동이 지나간다" 느낌 ↑.
+  const ringFactorLinear = 1 - distFromRing / wave.bandwidth;
+  const ringFactor = ringFactorLinear * ringFactorLinear;
   // 게임: 파동이 늙을수록 영향 ↓ (선형).
   const age = t - wave.startTime;
   const timeFactor = Math.max(0, 1 - age / wave.duration);
