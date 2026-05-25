@@ -80,6 +80,7 @@ export type CutsceneStep =
   | { type: 'action'; kind: string }
   | { type: 'control'; kind: EntityKind; set: Partial<EntityControl> }
   | { type: 'spawn'; kind: EntityKind; count: number; area?: SpawnArea }
+  | { type: 'place'; kind: EntityKind; label: string }
   | { type: 'pause'; seconds: number }
   | { type: 'waitFor'; condition: WaitCondition; maxSeconds: number }
   | { type: 'waitForShockwaves'; count: number; maxSeconds: number }
@@ -182,4 +183,12 @@ export function clear(): CutsceneStep {
 // 게임: 컷신 종료 마커 — 시퀀스 끝. BloodScene 가 placing/running 으로 전환.
 export function end(): CutsceneStep {
   return { type: 'end' };
+}
+
+// 게임: 사용자 클릭 배치를 placementQueue 에 등록. 컷신/스테이지 종료 시점에 일괄로 placing 단계가
+//   시작되어 큐 순서대로 처리됨. step 자체는 즉시 advance — 컷신 흐름 막지 않음.
+//   예: place('tcell', 'T세포 (대장세포)')
+//   기존 하드코딩된 3개 (TCELL/BACTERIA_COMMANDER/BCELL) 를 스크립터블하게 빼는 용도.
+export function place(kind: EntityKind, label: string): CutsceneStep {
+  return { type: 'place', kind, label };
 }

@@ -23,23 +23,14 @@ import { AntibodySystem } from '../systems/AntibodySystem';
 import { AntibodyRenderer } from '../render/AntibodyRenderer';
 import { applySeparation } from '../domain/separation';
 import { pickMutation, applyMutation, type MutationKind } from '../domain/mutations';
-import { STAGE_1, type StageConfig, type StageResult } from '../stages/types';
+import { STAGES } from '../stages/all';
+import type { StageConfig, StageResult } from '../stages/types';
 import { CUTSCENE_INTRO } from '../cutscenes/intro-script';
 import type { CutsceneStep, WaitCondition } from '../cutscenes/types';
 import { EntityRegistry } from '../domain/entityControl';
 
 // 게임: 초기 spawn 수는 Session 20 부터 StageConfig 로 이전 (src/stages/types.ts).
-//   COMMANDER_COUNT 는 placement queue 의 의미로만 (사용자가 클릭으로 1마리 배치) — 상수 유지.
-const COMMANDER_COUNT = 1;
-
-// 게임: 초기 대식세포 수 (M5.4a).
-const MACROPHAGE_COUNT = 1;
-
-// 게임: 초기 B세포 수 (M7).
-const BCELL_COUNT = 1;
-
-// 게임: 초기 T세포 수 (M7). 복수화는 추후.
-const TCELL_COUNT = 1;
+//   T/B세포/세균커맨더 배치는 Session 22 부터 cutscenes/intro-script.ts 의 place() step 으로 이전.
 
 // 게임: 호중구 진화 임계 — level 도달 시 NK/BCELL/SUPER 무작위 변환.
 const NEUTROPHIL_EVOLUTION_LEVEL = 5;
@@ -74,7 +65,9 @@ const SHOCKWAVE_CONFIG = {
   waveTemplate: {
     speed: 280,
     duration: 1.2,
-    power: 600,
+    // 게임: 링 위 호중구가 받는 최대 가속도 (px/s²). ringFactor 가 제곱이라
+    //   링에서 멀어지면 빠르게 작아짐 → power 가 클수록 "가까운 호중구만" 더 멀리 날아감.
+    power: 1000,
     bandwidth: 50,
   },
 };
@@ -348,6 +341,9 @@ export class BloodScene extends Phaser.Scene {
   //   actionStarted — ACTION 한 번만 spawn 처리 (placeholder 는 timer 만).
   //   uiBg / uiText / uiHint — 텍스트 박스 그래픽 객체 (lazy 생성).
   private cutsceneSteps: CutsceneStep[] = CUTSCENE_INTRO;
+  // 게임: 현재 cutscene 이 stage intro 인지 (true) 글로벌 CUTSCENE_INTRO 인지 (false) 구분.
+  //   endCutscene 분기 — false=CUTSCENE_INTRO 끝 → startStageFlow, true=stage.intro 끝 → 본게임.
+  private cutsceneIsStageIntro = false;
   private cutsceneStepIndex = 0;
   private cutsceneLineIndex = 0;
   private cutsceneWordIndex = 0;
@@ -399,14 +395,19 @@ export class BloodScene extends Phaser.Scene {
   // 게임: cursor 키 — 대식세포 수동 조작 (Session 19). create 에서 셋업.
   private cursors: Phaser.Types.Input.Keyboard.CursorKeys | null = null;
   // 게임: 스테이지 시스템 (Session 20).
+  //   currentStageIndex — STAGES 배열 인덱스 (0~9). init(data) 에서 받아 set.
   //   currentStage    — 현재 활성 스테이지 config (스폰/판정 기준).
   //   stageState      — running 중 / 결과 표시 중 / 종료. 결과 후 sim 정지.
-  //   nextWaveIndex   — bacteriaWaves 의 다음 처리할 인덱스. 매 프레임 atSec 도달 검사.
+  //   nextWaveIndex   — stage.waves 의 다음 처리할 인덱스. 매 프레임 atSec 도달 검사.
+  //   skipIntro       — restart 시 인트로/배치 스킵 (다음 스테이지 진입용). init 에서 set.
   //   stageResult     — 평가 결과 (결과 모달 표시용). null = 진행 중.
   //   stageResultText — 결과 모달 텍스트 객체 (생성 시 lazy).
-  private currentStage: StageConfig = STAGE_1;
+  private currentStageIndex = 0;
+  private currentStage: StageConfig = STAGES[0];
   private stageState: 'running' | 'resolved' = 'running';
   private nextWaveIndex = 0;
+  private skipIntro = false;
+  private lastStageResult: StageResult | null = null;
   private debugHud!: Phaser.GameObjects.Text;
   // 게임: 배치 큐. 순서대로 클릭으로 배치. 비면 phase='running'.
   private placementQueue: { dna: DNA; label: string }[] = [];
@@ -417,6 +418,32 @@ export class BloodScene extends Phaser.Scene {
 
   constructor() {
     super('BloodScene');
+  }
+
+  // Phaser: create() 직전에 호출 — scene.restart(data) 의 data 수신.
+  //   stageIndex   — 진입할 스테이지 (0~9). 생략/0 = 첫 스테이지.
+  //   skipIntro    — true 면 CUTSCENE_INTRO + 배치 단계 스킵 → 바로 stage 진입.
+  //                  다음 스테이지 진입 시 true. retry 시 false.
+  //
+  //   ⚠️ scene.restart 는 인스턴스를 재구성하지 않음 (init/create 만 다시 호출). 클래스 필드는
+  //   이전 값 유지 — phase, cutsceneIsStageIntro 등 안전한 초기값 명시 리셋 필요.
+  init(data?: { stageIndex?: number; skipIntro?: boolean }): void {
+    this.currentStageIndex = Math.max(0, Math.min(STAGES.length - 1, data?.stageIndex ?? 0));
+    this.currentStage = STAGES[this.currentStageIndex];
+    this.skipIntro = data?.skipIntro ?? false;
+    // 게임: 안전 리셋 — 이전 run 잔존값 차단. showStageTitle 3초 대기 동안 SIM 이 잘못 돌면
+    //   checkStageResolution 가 빈 풀에서 호중구 0 → wipe 오판정. phase='cutscene' 으로 SIM 차단.
+    //   cutsceneSteps 도 빈 배열로 — 3초 대기 동안 updateCutscene 이 이전 스테이지의 stale step 을
+    //   처리하지 않도록 (handleCutsceneTap 의 stale step 라우팅도 차단).
+    this.phase = 'cutscene';
+    this.cutsceneIsStageIntro = false;
+    this.cutsceneSteps = [];
+    this.cutsceneStepIndex = 0;
+    this.cutsceneAwaitingClick = false;
+    this.cutsceneUiBg = null;
+    this.cutsceneUiText = null;
+    this.cutsceneUiHint = null;
+    this.lastStageResult = null;
   }
 
   // Phaser: 씬 시작 시 1회 호출.
@@ -467,8 +494,8 @@ export class BloodScene extends Phaser.Scene {
     this.teamSystem = new TeamSystem();
     this.macrophageSystem = new MacrophageSystem(this.entityRegistry);
 
-    // 게임: 스테이지 상태 초기화 (Session 20). restart 시에도 첫 스테이지부터.
-    this.currentStage = STAGE_1;
+    // 게임: 스테이지 상태 초기화. init(data) 가 set 한 currentStageIndex / Stage 사용.
+    //   restart(data) 없이 호출되면 첫 스테이지(인덱스 0).
     this.stageState = 'running';
     this.nextWaveIndex = 0;
     this.stageStartTime = 0;
@@ -477,14 +504,9 @@ export class BloodScene extends Phaser.Scene {
     // 게임: 스테이지 시작 spawn (호중구/세균/대식세포) 은 컷신 종료 시점 (endCutscene) 으로 미룸.
     //   컷신 도중 호중구가 보이면 안 됨 — populateStageStart() 가 endCutscene 에서 호출.
 
-    // 게임: 주요 캐릭 (T세포 / 세균 커맨더 / B세포) placement queue 만 등록.
-    //        beginNextPlacement 호출은 placementText 생성 후로 미룸 (setText undefined 회피).
-    this.placementQueue = [
-      { dna: TCELL, label: 'T세포 (대장세포)' },
-      { dna: BACTERIA_COMMANDER, label: '세균 커맨더' },
-      { dna: BCELL, label: 'B세포' },
-    ];
-    void TCELL_COUNT; void COMMANDER_COUNT; void BCELL_COUNT; // 상수 보존, 미사용 회피
+    // 게임: placement queue 는 컷신/스테이지 스크립트의 place() step 이 채움 (Session 22).
+    //   하드코딩된 3개 (TCELL/COMMANDER/BCELL) 는 cutscenes/intro-script.ts 의 place() 로 이전.
+    this.placementQueue = [];
 
     // Phaser: pointer 이벤트.
     //   placement 중: 미리보기 핸들 위치 갱신 + 클릭 시 spawn + 다음 슬롯
@@ -584,13 +606,22 @@ export class BloodScene extends Phaser.Scene {
     });
     this.placementText.setOrigin(0.5, 0.5);
 
-    // 게임: 컷신 시작 (Session 21). create 끝 — UI 텍스트 등 모두 만들어진 후.
-    //   컷신 끝나면 자동으로 beginNextPlacement 호출 (advanceCutsceneStep 의 end 처리).
+    // 게임: 컷신 시작 (Session 21) — 첫 스테이지에만. skipIntro = 다음 스테이지 진입.
+    //   컷신 끝나면 자동으로 beginNextPlacement → 본게임 진입.
     //   영양분 시스템 frozen + disableAll — 컷신 동안 spawnAt 5개 외 어떤 영양분도 등장 X.
     //   세균이 영양분 흡수해도 frozen 이라 부활 차단.
     this.nutrientSystem.frozen = true;
     this.nutrientSystem.disableAll();
-    this.beginCutscene();
+    if (this.skipIntro) {
+      // 게임: 다음 스테이지 진입 — CUTSCENE_INTRO / 배치 스킵. 바로 stage 타이틀.
+      this.placementQueue = [];
+      this.startStageFlow();
+    } else {
+      // 게임: 첫 진입 — 글로벌 CUTSCENE_INTRO 먼저 → 종료 시 stage flow.
+      this.cutsceneSteps = CUTSCENE_INTRO;
+      this.cutsceneIsStageIntro = false;
+      this.beginCutscene();
+    }
 
     // Phaser: 디버그 키. scene.restart() 시 자동 정리되고 create 에서 재등록.
     const kb = this.input.keyboard;
@@ -598,7 +629,21 @@ export class BloodScene extends Phaser.Scene {
       kb.on('keydown-N', () => this.spawnNeutrophils(10));
       kb.on('keydown-B', () => this.spawnBacteria(10));
       kb.on('keydown-P', () => { this.paused = !this.paused; });
-      kb.on('keydown-R', () => this.scene.restart());
+      // 게임: [R] 현재 스테이지 재시작 — init data 로 currentStageIndex 유지, skipIntro=true (intro 반복 방지).
+      //   첫 스테이지 (index 0) 에서는 skipIntro=false 라야 CUTSCENE_INTRO 가 다시 나옴 (디버그 편의).
+      kb.on('keydown-R', () => this.scene.restart({
+        stageIndex: this.currentStageIndex,
+        skipIntro: this.currentStageIndex > 0,
+      }));
+      // 게임: [SPACE] 결과 모달에서 다음 스테이지로 진행. 1★ 이상이면 가능 (clear / timeout ★1+).
+      //   0★ (wipe / timeout 실패) 는 무시. 마지막 스테이지도 무시 (게임 종료).
+      kb.on('keydown-SPACE', () => {
+        if (this.stageState !== 'resolved') return;
+        if ((this.lastStageResult?.stars ?? 0) < 1) return;
+        const next = this.currentStageIndex + 1;
+        if (next >= STAGES.length) return;
+        this.scene.restart({ stageIndex: next, skipIntro: true });
+      });
       // 게임: 숫자키 1~3 = speed multiplier (shift 없음). shift+1~6 = 변이 1~6 (디버그).
       //   Phaser keydown 콜백 인자 = KeyboardEvent. shiftKey 검사로 분기.
       kb.on('keydown-ONE',   (e: KeyboardEvent) => { if (e.shiftKey) this.debugApplyMutation('zombie'); else this.speedMultiplier = 1; });
@@ -613,10 +658,16 @@ export class BloodScene extends Phaser.Scene {
       // 게임: [M] 디버그 — 변이 안 된 NEUTROPHIL 1마리 무작위 선정 → 무작위 변이 적용.
       //   페이즈 2 거치지 않고 즉시 변이 → Stage 11~13 페이즈 1 동작 검증용.
       kb.on('keydown-M', () => this.debugRandomMutation());
-      // 게임: [ESC] 컷신 진행 중이면 스킵 → placing 으로 전환.
+      // 게임: [ESC] / [S] 컷신 진행 중이면 스킵 → placing 으로 전환. [S] 는 직관적 alias.
       kb.on('keydown-ESC', () => {
         if (this.phase === 'cutscene') this.endCutscene();
       });
+      kb.on('keydown-S', () => {
+        if (this.phase === 'cutscene') this.endCutscene();
+      });
+      // 게임: [X] 디버그 — 대식세포 1마리 추가. 영역은 다음 프레임 시스템이 자동 재계산
+      //   (N마리면 화면 N등분 → 새로 추가하면 기존 영역도 줄어듦).
+      kb.on('keydown-X', () => this.debugSpawnMacrophage());
       // 게임: [I] 페이즈 2 인터렉션 모드 토글. 디폴트 관전, 토글 시 개입.
       kb.on('keydown-I', () => {
         this.interactive = !this.interactive;
@@ -683,6 +734,18 @@ export class BloodScene extends Phaser.Scene {
   //   bounds / spawn 영역 / 대식세포 floor 모두 이 값 사용. 데스크탑은 scale.height 그대로.
   private effectiveHeight(): number {
     return this.scale.height - (this.isMobile ? BOTTOM_RESERVE_MOBILE : 0);
+  }
+
+  // 게임: [X] 디버그 — 대식세포 1마리 추가. 무작위 X 위치, 바닥 Y 강제.
+  //   MacrophageSystem.update 가 다음 프레임에 영역 재계산 (현재 x 기준 정렬 후 등분).
+  //   기존 대식세포의 zone 도 좁아짐 — 직접 시험해볼 수 있도록 의도된 동작.
+  private debugSpawnMacrophage(): void {
+    const W = this.scale.width;
+    const H = this.effectiveHeight();
+    const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
+    const phase = Math.random() * Math.PI * 2;
+    this.macrophageSystem.add(new Macrophage(MACROPHAGE, this.cellRenderer, x, H, phase));
+    console.log('[debug X] macrophage +1 → x=', x.toFixed(0), 'total=', this.macrophageSystem.getAll().length);
   }
 
   // 게임: 디버그용 — 변이 안 된 살아있는 NEUTROPHIL 후보 중 무작위 선정 → 6 변이 중 균등.
@@ -788,49 +851,160 @@ export class BloodScene extends Phaser.Scene {
     this.cutsceneUiHint = null;
   }
 
-  // 게임: 컷신 종료 — UI 제거 + EntityRegistry 디폴트 복귀 + 시작 spawn + placement 진입.
-  //   registry.reset() 으로 모든 종 다시 enabled/visible/!frozen 으로 (컷신이 set 한 모든 제어 해제).
-  //   populateStageStart 가 호중구/세균/대식세포 spawn.
+  // 게임: 컷신 종료 — UI 제거 + EntityRegistry 디폴트 복귀.
+  //   cutsceneIsStageIntro 가 false (CUTSCENE_INTRO 종료) 면 stage flow 시작.
+  //   true (stage.intro 종료) 면 본게임 진입 (setup 실행 + placement).
   private endCutscene(): void {
     if (this.phase !== 'cutscene') return;
-    console.log('[cutscene] end');
+    console.log('[cutscene] end', this.cutsceneIsStageIntro ? '(stage intro)' : '(global intro)');
     this.destroyCutsceneUI();
     this.entityRegistry.reset();
     this.bacteriaBehavior.frozen = false;  // legacy flag — 다음 정리 단계에 제거.
-    this.nutrientSystem.setSpawnBox(null);  // 화면 전체 부활 영역 복원.
+    this.nutrientSystem.setSpawnBox(null);
     this.nutrientSystem.frozen = false;
-    this.nutrientSystem.respawnDelayMul = 1;  // 동적 조절 해제 (정상 속도).
+    this.nutrientSystem.respawnDelayMul = 1;
     this.nutrientSystem.enableAll();
     this.nutrientRegenRule = null;
-    this.populateStageStart();
-    this.beginNextPlacement(this.scale.width, this.scale.height);
+    if (this.cutsceneIsStageIntro) {
+      // stage.intro 종료 → 본게임 진입.
+      this.populateStageStart();
+      this.beginNextPlacement(this.scale.width, this.scale.height);
+    } else {
+      // CUTSCENE_INTRO 종료 → stage 타이틀 + stage.intro 흐름.
+      this.startStageFlow();
+    }
   }
 
-  // 게임: 스테이지 시작 spawn — 호중구/세균/대식세포. 컷신 종료 시점에 1회 호출.
-  //   컷신 중에 spawn 한 세균 (spawnBacteria 액션) 은 그대로 유지 — 분열한 자식 포함 게임에 잔류.
-  //   호중구는 컷신 중에 spawn 된 게 있을 수 있음 (spawnNeutrophils 액션). 이건 그대로 유지.
-  private populateStageStart(): void {
+  // 게임: 스테이지 진입 흐름 — 타이틀 표시 → stage.intro 컷신 → 본게임.
+  //   skipIntro 경로 (다음 스테이지 진입) + CUTSCENE_INTRO 종료 경로 양쪽에서 호출됨.
+  private startStageFlow(): void {
+    this.showStageTitle(() => {
+      if (this.currentStage.intro.length > 0) {
+        // stage.intro 가 있으면 cutscene runner 로 재사용.
+        this.cutsceneSteps = this.currentStage.intro;
+        this.cutsceneIsStageIntro = true;
+        this.beginCutscene();
+      } else {
+        // intro 없는 스테이지 — 즉시 본게임.
+        this.populateStageStart();
+        this.beginNextPlacement(this.scale.width, this.scale.height);
+      }
+    });
+  }
+
+  // 게임: 스테이지 타이틀 풀스크린 표시 — 페이드인 0.5s / 유지 1.5s / 페이드아웃 0.5s.
+  //   완료 시 onComplete 호출. tween 사용 — sim 정지 무관 (TweenManager 가 update 외부에서 동작).
+  private showStageTitle(onComplete: () => void): void {
     const W = this.scale.width;
     const H = this.effectiveHeight();
-    for (let i = 0; i < this.currentStage.startNeutrophils; i++) {
-      const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
-      const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
-      const phase = Math.random() * Math.PI * 2;
-      const hp = NEUTROPHIL.combat.maxHp * (0.6 + Math.random() * 0.4);
-      this.whiteCellBehavior.spawn(NEUTROPHIL, x, y, phase, hp);
+    const text = this.add.text(
+      W / 2, H / 2,
+      `STAGE ${this.currentStageIndex + 1}\n${this.currentStage.title}`,
+      {
+        color: '#ffe17a',
+        fontFamily: 'ui-monospace, monospace',
+        fontSize: '48px',
+        fontStyle: 'bold',
+        align: 'center',
+        stroke: '#1a0a00',
+        strokeThickness: 6,
+        lineSpacing: 12,
+      },
+    );
+    text.setOrigin(0.5, 0.5);
+    text.setDepth(BUBBLE_DEPTH + 30);
+    text.setAlpha(0);
+    this.tweens.add({
+      targets: text,
+      alpha: 1,
+      duration: 500,
+      onComplete: () => {
+        this.time.delayedCall(1500, () => {
+          this.tweens.add({
+            targets: text,
+            alpha: 0,
+            duration: 500,
+            onComplete: () => {
+              text.destroy();
+              onComplete();
+            },
+          });
+        });
+      },
+    });
+  }
+
+  // 게임: 스테이지 시작 spawn — currentStage.setup 스크립트 일괄 실행 (Session 22).
+  //   각 CutsceneStep 을 즉시 실행 (timer 없음). 지원: spawn / nutrientRegen / evolveCommander / control.
+  //   narration / pause / waitFor 는 setup 에선 의미 없어 skip.
+  //   먼저 applyCutsceneClear() 호출 — 컷신 / 이전 스테이지 잔존 개체 모두 정리 후 깨끗한 상태에서 spawn.
+  private populateStageStart(): void {
+    this.applyCutsceneClear();
+    // 게임: stage 카운터 / wave 인덱스도 깨끗하게 (재시작 / 다음 스테이지 둘 다 0 부터).
+    this.bacteriaBehavior.resetStageCounters();
+    this.nextWaveIndex = 0;
+    this.stageStartTime = this.gameTime;
+    for (const step of this.currentStage.setup) {
+      this.runStageStep(step);
     }
-    for (let i = 0; i < this.currentStage.startBacteria; i++) {
-      const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
-      const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
-      const phase = Math.random() * Math.PI * 2;
-      const hp = BACTERIA_A.combat.maxHp * (0.6 + Math.random() * 0.4);
-      this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase, hp);
+  }
+
+  // 게임: setup / wave 의 step 즉시 실행. cutscene runner 와 별개 — timer/UI 없이 효과만 적용.
+  //   step.kind 별 분기. 일부 step (narration / waitFor / pause) 은 본게임 흐름에 안 맞아 skip.
+  private runStageStep(step: CutsceneStep): void {
+    if (step.type === 'spawn') {
+      this.runSpawnStep(step);
+    } else if (step.type === 'control') {
+      this.entityRegistry.set(step.kind, step.set);
+    } else if (step.type === 'nutrientRegen') {
+      this.applyNutrientRegen(step.options);
+    } else if (step.type === 'evolveCommander') {
+      const remainingDelay = Math.max(0, COMMANDER_EVOLUTION_DELAY - step.afterSeconds);
+      this.teamSystem.requeueDeathRecord(this.gameTime - remainingDelay);
+    } else if (step.type === 'clear') {
+      this.applyCutsceneClear();
+    } else if (step.type === 'place') {
+      // 게임: placementQueue 에 등록. 컷신/stage setup 종료 시 beginNextPlacement 가 일괄 처리.
+      this.enqueuePlacement(step.kind, step.label);
     }
-    const floorY = H - MACROPHAGE.shape.base * 0.55;
-    for (let i = 0; i < MACROPHAGE_COUNT; i++) {
-      const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
-      const phase = Math.random() * Math.PI * 2;
-      this.macrophageSystem.add(new Macrophage(MACROPHAGE, this.cellRenderer, x, floorY, phase));
+    // narration / pause / waitFor / waitForShockwaves / end → setup/wave 에선 무시.
+  }
+
+  // 게임: EntityKind → 배치용 DNA 매핑. place() step 처리 시 placementQueue 에 push.
+  //   배치 가능한 종 (DNA 보유 + 사용자가 클릭으로 위치 선택 의미 있는 것) 만 매핑.
+  //   외 종 (영양분/항체/풍선 등) 은 무시 (console.warn).
+  private enqueuePlacement(kind: import('../domain/entityControl').EntityKind, label: string): void {
+    let dna: DNA | null = null;
+    switch (kind) {
+      case 'neutrophil':        dna = NEUTROPHIL; break;
+      case 'neutrophilSuper':   dna = NEUTROPHIL_SUPER; break;
+      case 'nk':                dna = NK_CELL; break;
+      case 'bcell':             dna = BCELL; break;
+      case 'tcell':             dna = TCELL; break;
+      case 'bacteria':          dna = BACTERIA_A; break;
+      case 'bacteriaCommander': dna = BACTERIA_COMMANDER; break;
+      case 'macrophage': case 'nutrient': case 'antibody': case 'bubble':
+        console.warn('[place] not supported for kind:', kind);
+        return;
+    }
+    if (dna !== null) this.placementQueue.push({ dna, label });
+  }
+
+  // 게임: spawn step 즉시 실행 — sparkle / interval 없이 count 개를 한꺼번에 spawn.
+  //   setup 에서 호출 (게임 시작 시점) — 컷신 runner 의 점진 spawn 과 다른 경로.
+  private runSpawnStep(step: { type: 'spawn'; kind: import('../domain/entityControl').EntityKind; count: number; area?: import('../cutscenes/types').SpawnArea }): void {
+    const W = this.scale.width;
+    const H = this.effectiveHeight();
+    const area = step.area ?? {};
+    const cx = area.cx ?? W / 2;
+    const cy = area.cy ?? H / 2;
+    const spread = area.spread ?? 0;
+    const infectedChance = area.infectedChance ?? 0;
+    for (let i = 0; i < step.count; i++) {
+      const x = cx + (Math.random() * 2 - 1) * spread;
+      const y = cy + (Math.random() * 2 - 1) * spread;
+      const infected = infectedChance > 0 && Math.random() < infectedChance;
+      this.spawnByEntityKind(step.kind, x, y, { infected });
     }
   }
 
@@ -950,6 +1124,11 @@ export class BloodScene extends Phaser.Scene {
       this.advanceCutsceneStep();
     } else if (step.type === 'clear') {
       this.applyCutsceneClear();
+      this.advanceCutsceneStep();
+    } else if (step.type === 'place') {
+      // 게임: placementQueue 에 등록 후 즉시 advance — 컷신 흐름 막지 않음.
+      //   컷신 종료 시 beginNextPlacement 가 큐를 순차 처리.
+      this.enqueuePlacement(step.kind, step.label);
       this.advanceCutsceneStep();
     } else {
       this.endCutscene();
@@ -1110,7 +1289,7 @@ export class BloodScene extends Phaser.Scene {
       }
       case 'macrophage': {
         // 게임: 대식세포는 바닥 고정 (y 무시 — 시스템이 floorY 강제).
-        const m = new Macrophage(MACROPHAGE, this.cellRenderer, x, this.effectiveHeight() - MACROPHAGE.shape.base, phase);
+        const m = new Macrophage(MACROPHAGE, this.cellRenderer, x, this.effectiveHeight(), phase);
         this.macrophageSystem.add(m);
         return;
       }
@@ -1929,77 +2108,88 @@ export class BloodScene extends Phaser.Scene {
     console.log('[finalizeBubbleWave] hits=', wave.hits, 'kind=', kind);
   }
 
-  // 게임: 스테이지 wave 스케줄 — gameTime 도달한 wave 자동 spawn (Session 20).
-  //   nextWaveIndex 부터 순차 검사 (배열은 atSec 오름차순 가정).
+  // 게임: 스테이지 wave 스케줄 — gameTime 도달한 wave 의 steps 일괄 실행 (Session 22).
+  //   nextWaveIndex 부터 순차 검사 (배열은 atSec 오름차순 가정). steps 안은 주로 spawn.
   private processStageWaves(t: number): void {
-    const waves = this.currentStage.bacteriaWaves;
-    const W = this.scale.width;
-    const H = this.effectiveHeight();
+    const waves = this.currentStage.waves;
     while (this.nextWaveIndex < waves.length) {
       const w = waves[this.nextWaveIndex];
       if (t < w.atSec) break;
-      console.log('[stage wave]', this.nextWaveIndex, 'atSec=', w.atSec, '+bacteria=', w.bacteria, '+commander=', w.commander ?? 0);
-      for (let i = 0; i < w.bacteria; i++) {
-        const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
-        const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
-        const phase = Math.random() * Math.PI * 2;
-        this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
-      }
-      for (let i = 0; i < (w.commander ?? 0); i++) {
-        const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
-        const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
-        const phase = Math.random() * Math.PI * 2;
-        this.bacteriaBehavior.spawn(BACTERIA_COMMANDER, x, y, phase);
-      }
+      console.log('[stage wave]', this.nextWaveIndex, 'atSec=', w.atSec, 'steps=', w.steps.length);
+      for (const step of w.steps) this.runStageStep(step);
       this.nextWaveIndex++;
     }
   }
 
   // 게임: 스테이지 결과 판정 — 매 프레임 호출. 한 번 resolved 되면 무시.
-  //   1) 호중구 (NEUTROPHIL/NK/SUPER) 전멸 → 즉시 패배 (★0).
-  //   2) wave 다 처리 + 세균 0 → 시간 클리어 (★3).
-  //   3) gameTime >= timeLimit → 시간 초과. 비율로 ★2/★1/실패.
+  //   1) endConditions 위→아래 검사, 첫 일치가 결과 (clear / wipe).
+  //      단 'bacteriaEliminated' 는 spawned > 0 + 모든 wave 처리 완료여야 만 clear (초기 0 false-positive 방지).
+  //   2) gameTime >= timeLimit → 시간 초과. 비율로 ★2/★1/실패.
   private checkStageResolution(t: number): void {
     if (this.stageState !== 'running') return;
     const stage = this.currentStage;
     const spawned = this.bacteriaBehavior.getStageSpawned();
     const killed = this.bacteriaBehavior.getStageKilled();
-    // 게임: 호중구 = NEUTROPHIL / NK_CELL / NEUTROPHIL_SUPER. T/B 는 보조라 전투 능력 X.
-    const liveNeutrophils = this.whiteCellBehavior.getAlive().filter((c) =>
-      c.dnaKind === 'NEUTROPHIL' || c.dnaKind === 'NK_CELL' || c.dnaKind === 'NEUTROPHIL_SUPER',
-    );
-    if (liveNeutrophils.length === 0) {
-      this.resolveStage({ kind: 'wipe', stars: 0, killed, total: spawned, elapsedSec: t });
-      return;
+    const allWavesProcessed = this.nextWaveIndex >= stage.waves.length;
+
+    for (const cond of stage.endConditions) {
+      let matched = false;
+      switch (cond.check) {
+        case 'bacteriaEliminated':
+          matched = allWavesProcessed && spawned > 0 && this.bacteriaBehavior.getAlive().length === 0;
+          break;
+        case 'whiteCellsEliminated':
+          matched = this.whiteCellBehavior.getAlive().length === 0;
+          break;
+        case 'neutrophilsEliminated': {
+          // 게임: 호중구 = NEUTROPHIL / NK_CELL / NEUTROPHIL_SUPER. T/B 는 보조라 전투 능력 X.
+          matched = this.whiteCellBehavior.getAlive().filter((c) =>
+            c.dnaKind === 'NEUTROPHIL' || c.dnaKind === 'NK_CELL' || c.dnaKind === 'NEUTROPHIL_SUPER',
+          ).length === 0;
+          break;
+        }
+      }
+      if (matched) {
+        if (cond.result === 'clear') {
+          this.resolveStage({ kind: 'clear', stars: 3, killed, total: spawned, elapsedSec: t });
+        } else {
+          this.resolveStage({ kind: 'wipe', stars: 0, killed, total: spawned, elapsedSec: t });
+        }
+        return;
+      }
     }
-    const allWavesProcessed = this.nextWaveIndex >= stage.bacteriaWaves.length;
-    const liveBacteria = this.bacteriaBehavior.getAlive().length;
-    if (allWavesProcessed && liveBacteria === 0 && spawned > 0) {
-      this.resolveStage({ kind: 'clear', stars: 3, killed, total: spawned, elapsedSec: t });
-      return;
-    }
+
     if (t >= stage.timeLimit) {
       const ratio = spawned > 0 ? Math.min(1, killed / spawned) : 0;
       let stars: 0 | 1 | 2 = 0;
-      if (ratio >= stage.starTwoRatio) stars = 2;
-      else if (ratio >= stage.starOneRatio) stars = 1;
+      if (ratio >= stage.stars.twoRatio) stars = 2;
+      else if (ratio >= stage.stars.oneRatio) stars = 1;
       this.resolveStage({ kind: 'timeout', stars, killed, total: spawned });
     }
   }
 
   // 게임: 결과 set + 모달 표시. stageState='resolved' 로 sim 정지 (update 안 분기 처리).
   //   결과 모달 (scene.restart 시 자동 destroy) — 명시 ref 안 보유.
+  //   진행 조건 = 1★ 이상 (clear ★3 / timeout ★2 / timeout ★1). 0★ (wipe / timeout 실패) 는 재시작만.
+  //   마지막 스테이지 클리어는 GAME COMPLETE 표시.
   private resolveStage(result: StageResult): void {
     this.stageState = 'resolved';
-    console.log('[stage resolved]', result);
+    this.lastStageResult = result;
+    console.log('[stage resolved]', this.currentStage.id, result);
     const W = this.scale.width;
     const H = this.effectiveHeight();
     const starChars = result.stars >= 1 ? '★'.repeat(result.stars) + '☆'.repeat(3 - result.stars) : '실패';
     const headline =
-      result.kind === 'clear' ? '시간 클리어!' :
+      result.kind === 'clear' ? '클리어!' :
       result.kind === 'wipe'  ? '호중구 전멸' :
       '시간 종료';
-    const body = `${headline}\n${starChars}\n잡은 세균 ${result.killed}/${result.total}\n[R] 재시작`;
+    const isLast = this.currentStageIndex >= STAGES.length - 1;
+    const canAdvance = result.stars >= 1;
+    const guide =
+      canAdvance && isLast  ? '🎉 GAME COMPLETE 🎉\n[R] 다시 시작' :
+      canAdvance             ? '[SPACE] 다음 스테이지   [R] 재시작' :
+                              '[R] 재시작';
+    const body = `STAGE ${this.currentStageIndex + 1} — ${this.currentStage.title}\n${headline}\n${starChars}\n잡은 세균 ${result.killed}/${result.total}\n\n${guide}`;
     const text = this.add.text(W / 2, H / 2, body, {
       color: '#ffe17a',
       fontFamily: 'ui-monospace, monospace',
@@ -2079,7 +2269,7 @@ export class BloodScene extends Phaser.Scene {
         const ss = Math.floor(remain % 60).toString().padStart(2, '0');
         const killed = this.bacteriaBehavior.getStageKilled();
         const spawned = this.bacteriaBehavior.getStageSpawned();
-        this.stageHudText.setText(`${this.currentStage.name}  ⏱ ${mm}:${ss}   세균 ${killed}/${spawned}`);
+        this.stageHudText.setText(`STAGE ${this.currentStageIndex + 1} ${this.currentStage.title}  ⏱ ${mm}:${ss}   세균 ${killed}/${spawned}`);
         this.stageHudText.setVisible(true);
       } else {
         this.stageHudText.setVisible(false);
@@ -2174,11 +2364,11 @@ export class BloodScene extends Phaser.Scene {
     // 게임: 6) 백혈구 위치/렌더 갱신 (살아있는 것 + 시체 모두 — 시체는 내부에서 낙하 처리)
     for (const cell of allCells) cell.update(t, dt, bounds);
 
-    // 게임: 7) 대식세포 — 침전된 시체 흡수 + 점수 누적. 납작 비율 0.55 반영.
+    // 게임: 7) 대식세포 — 침전된 시체 흡수 + 점수 누적. flatBottom 모드라 handle.y = cell 바닥.
     //   cursor 키 (← →) 매 프레임 검사 — isDown 이면 manualUntil 갱신. 자동/수동 분기는 MacrophageSystem.
-    const macrophageFloorY = bounds.height - MACROPHAGE.shape.base * 0.55;
+    const macrophageFloorY = bounds.height;
     this.applyMacrophageManualInput(t);
-    this.macrophageSystem.update(t, macrophageFloorY, dt, allCells, allBacteria);
+    this.macrophageSystem.update(t, macrophageFloorY, dt, allCells, allBacteria, bounds.width);
 
     // 게임: 7b) 항체 시스템 — 위치 적분 + 사거리 만료 시 정지.
     //         WhiteCellBehaviorSystem 의 processBCellFiring 에서 spawn 됨.

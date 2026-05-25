@@ -6,7 +6,7 @@
 // 대본 형식 — 사용자가 텍스트만 편집할 수 있도록 backtick multi-line. 들여쓰기/빈 줄 자동 무시.
 // 라인 단위로 단어별 타이핑 → 라인 사이 짧은 pause → 클릭으로 다음 step.
 
-import { narration, warning, control, spawn, pause, waitFor, waitForShockwaves, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
+import { narration, warning, control, spawn, place, pause, waitFor, waitForShockwaves, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
 
 export const CUTSCENE_INTRO: CutsceneStep[] = [
   // 게임: 인트로 진입 시 모든 종 비활성. 각 step 이 필요한 것만 enabled 로.
@@ -67,13 +67,14 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   `),
 
   // 호중구 1마리 — 세균 frozen 다시 켜서 그 사이 도주 차단.
-  //   호중구가 정지된 세균을 모두 잡을 때까지 대기 (max 15s).
+  //   호중구가 정지된 세균을 모두 잡을 때까지 대기 (max 15s) → 2초 호흡 → 다음 step.
   //   이 시연 동안만 호중구 속도 ×2 — 시연 호흡 단축. 다음 step 전 1.0 으로 복구.
   control('bacteria', { frozen: true }),
   control('neutrophil', { enabled: true, speedMul: 2 }),
   spawn('neutrophil', 1, { spread: 0 }),
   waitFor('bacteriaEliminated', 15),
   control('neutrophil', { speedMul: 1 }),
+  pause(2),
 
   narration(`
     떨어진건 죽은 세포로 고름이됩니다.
@@ -175,6 +176,11 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   evolveCommander(3),
   waitForShockwaves(6, 60),
 
+  // 게임: 컷신 종료 직전 사용자 배치 등록 — 컷신 끝나면 placing 단계에서 큐 순서대로 클릭 배치.
+  //   Session 22 — 기존 BloodScene 하드코딩 3개 → place() step 으로 이전.
+  place('tcell', 'T세포 (대장세포)'),
+  place('bacteriaCommander', '세균 커맨더'),
+  place('bcell', 'B세포'),
 
   end(),
 ];
