@@ -70,17 +70,31 @@ export class MacrophageSystem {
   }
 
   // 게임: 매 프레임 호출. 시체 풀은 BloodScene 이 모아서 전달.
-  //   t          : gameTime (Macrophage.manualUntil 만료 비교용 — Session 19)
-  //   floorY     : 화면 바닥 Y (대식세포 Y 강제용)
-  //   whiteCells : 호중구 풀 (시체 포함)
-  //   bacteria   : 세균 풀 (시체 포함)
+  //   t            : gameTime (Macrophage.manualUntil 만료 비교용 — Session 19)
+  //   floorY       : 화면 바닥 Y (대식세포 Y 강제용)
+  //   whiteCells   : 호중구 풀 (시체 포함)
+  //   bacteria     : 세균 풀 (시체 포함)
+  //   screenWidth  : 영역 분할용 화면 너비
   update(
     t: number,
     floorY: number,
     dt: number,
     whiteCells: readonly WhiteCell[],
     bacteria: readonly Bacteria[],
+    screenWidth: number,
   ): void {
+    // 게임: 동적 영역 분할 — N마리면 화면을 N등분. 현재 x 기준 정렬 후 좌→우 zone 할당.
+    //   매 프레임 재계산. 점수 누적은 모든 대식세포가 totalScore 에 공유 → N마리면 청소 속도 N배.
+    const N = this.macrophages.length;
+    if (N > 0) {
+      const sorted = [...this.macrophages].sort((a, b) => a.x - b.x);
+      const zoneWidth = screenWidth / N;
+      for (let i = 0; i < N; i++) {
+        sorted[i].zoneMinX = i * zoneWidth;
+        sorted[i].zoneMaxX = (i + 1) * zoneWidth;
+      }
+    }
+
     // 게임: frozen 시 vx=0 강제 + 추적/흡수 skip. speedMul 은 이동 속도에 곱.
     const ctrl = this.registry?.get('macrophage');
     if (ctrl?.frozen) {
@@ -94,11 +108,13 @@ export class MacrophageSystem {
     const speedMul = ctrl?.speedMul ?? 1;
     for (const m of this.macrophages) {
       // 게임: 가장 가까운 침전 시체 찾기 (X 좌표 거리 기준 — Y 는 어차피 바닥).
+      //   zone 밖 시체는 제외 — 자기 구역 안 시체만 노림.
       let nearest: { x: number; y: number; isWhite: boolean; entity: WhiteCell | Bacteria } | null = null;
       let bestDx = Infinity;
 
       for (const w of whiteCells) {
         if (!w.isSettled() || w.isAbsorbed) continue;
+        if (w.x < m.zoneMinX || w.x > m.zoneMaxX) continue;
         const dx = Math.abs(w.x - m.x);
         if (dx < bestDx) {
           bestDx = dx;
@@ -107,6 +123,7 @@ export class MacrophageSystem {
       }
       for (const b of bacteria) {
         if (!b.isSettled() || b.isAbsorbed) continue;
+        if (b.x < m.zoneMinX || b.x > m.zoneMaxX) continue;
         const dx = Math.abs(b.x - m.x);
         if (dx < bestDx) {
           bestDx = dx;

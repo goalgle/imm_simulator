@@ -22,6 +22,10 @@ export class Macrophage {
   //   키 떼도 manualUntil 까지 마지막 방향 드리프트 → 만료 시 자동 모드 복귀.
   manualUntil = 0;
   manualDirX: -1 | 0 | 1 = 0;
+  // 게임: 영역 (zone) 경계 — MacrophageSystem 가 매 프레임 갱신. 화면을 대식세포 수로 등분.
+  //   기본값은 사실상 무제한 (초기 1프레임 동안만 — 시스템이 즉시 덮어씀).
+  zoneMinX = 0;
+  zoneMaxX = Number.POSITIVE_INFINITY;
 
   constructor(
     public readonly dna: DNA,
@@ -32,15 +36,31 @@ export class Macrophage {
   ) {
     this.handle = renderer.create(dna, x, y);
     this.handle.setPhase(phase);
+    // 게임: 대식세포는 바닥을 기는 형태 — handle.y = 바닥 위치, polygon 의 위쪽만 dome 으로 표시.
+    this.handle.setFlatBottom(true);
   }
 
-  // 게임: 매 프레임 호출. y 는 외부에서 강제 (바닥 고정).
+  // 게임: 매 프레임 호출. y 는 외부에서 강제 (바닥 고정). x 는 zone 경계로 클램프.
   update(t: number, dt: number, floorY: number): void {
     this.x += this.vx * dt;
+    // 게임: zone 경계 클램프 — 자기 구역 밖으로 못 나감. 경계 도달 시 vx 0 (관성 차단).
+    if (this.x < this.zoneMinX) { this.x = this.zoneMinX; this.vx = 0; }
+    else if (this.x > this.zoneMaxX) { this.x = this.zoneMaxX; this.vx = 0; }
     this.y = floorY;
     this.handle.setPosition(this.x, this.y);
-    // 게임: 시각 — 바닥을 기는 느낌. 가로 1.0, 세로 0.55 로 납작 압축. 활성도 0, life 1.
-    this.handle.setScale(1.0, 0.55);
+    // 게임: 기어다니는 느낌 — vx 가 있을 때 squash-and-stretch.
+    //   걸음 주기 ~1.05Hz (cycle 6.6 rad/s). gait = sin(t × cycle).
+    //     stretchX = 1.0 + gait × 0.10 → 1.10 ~ 0.90 (가로 늘었다 줄었다)
+    //     stretchY = 0.55 − gait × 0.06 → 0.49 ~ 0.61 (반대 위상 = 발걸음의 압축)
+    //   정지 시: 가벼운 호흡 (sin(t × 1.5) × ±0.02) — 살아있는 느낌 유지.
+    const speed = Math.abs(this.vx);
+    if (speed > 1) {
+      const gait = Math.sin(t * 6.6);
+      this.handle.setScale(1.0 + gait * 0.10, 0.55 - gait * 0.06);
+    } else {
+      const breath = Math.sin(t * 1.5) * 0.02;
+      this.handle.setScale(1.0 + breath, 0.55 - breath);
+    }
     this.handle.setVisualState({ shock: 0, combat: 0, life: 1 });
     this.handle.update(t);
   }

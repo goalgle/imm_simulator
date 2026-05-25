@@ -28,6 +28,10 @@ export interface CellRenderHandle {
   // 게임: 시각 스케일 배율 (1.0 = 원본). 분열, 약화 등에 사용.
   //        scaleY 생략 시 scaleX 와 동일 (균등 스케일). 다르게 주면 납작/길쭉 형태.
   setScale(scaleX: number, scaleY?: number): void;
+  // 게임: 바닥 평탄화 — polygon 의 local y > 0 (바닥 쪽) 정점을 0 으로 클램프.
+  //   결과: 위는 일렁이는 dom, 아래는 평평한 한 줄. 바닥을 기는 대식세포 전용.
+  //   handle 의 y 위치 = cell 의 바닥 (위로 펼침). false = 평소 (둥근 형태).
+  setFlatBottom(enabled: boolean): void;
   // 게임: 알파 (0=투명, 1=불투명). 미리보기 등 반투명 표시에 사용.
   setAlpha(alpha: number): void;
   // 게임: 시각 상태 통보. shock/combat/life 채널을 한꺼번에.

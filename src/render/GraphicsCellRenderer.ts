@@ -121,6 +121,9 @@ class GraphicsHandle implements CellRenderHandle {
   private dna: DNA;
   private phase = 0;
   private visual: VisualState = { shock: 0, combat: 0, combatHueScale: 1, life: 1 };
+  // 게임: 바닥 평탄화 플래그 — true 면 매 프레임 polygon 의 local y > 0 정점을 0 으로 clamp.
+  //   결과 = 위는 dna 형태대로 일렁이고 아래는 평평한 줄. 대식세포 전용. 기본 false (둥근 형태).
+  private flatBottom = false;
   private buffer: Point[];
   // 게임: 보조 buffer 두 개. 매 프레임 buffer 를 스케일/오프셋해서 갱신.
   //        스타일별로 의미가 다름 (A: body/highlight, B: halo→body 재사용/inner, C: cellshade).
@@ -173,6 +176,10 @@ class GraphicsHandle implements CellRenderHandle {
     this.gfx.setVisible(visible);
   }
 
+  setFlatBottom(enabled: boolean): void {
+    this.flatBottom = enabled;
+  }
+
   setVisualState(state: VisualState): void {
     this.visual.shock = clamp01(state.shock);
     this.visual.combat = clamp01(state.combat);
@@ -213,6 +220,14 @@ class GraphicsHandle implements CellRenderHandle {
     const omegaBoost = (1 + COMBAT_OMEGA_BOOST * combat) * life;
 
     generatePolygon(this.dna, t, VERTEX_COUNT, this.phase, ampBoost, this.buffer, omegaBoost);
+
+    // 게임: 바닥 평탄화 — local y > 0 (바닥 쪽) 정점을 모두 0 에 맞춰 한 줄로.
+    //   파생 buffer (scalePoints 결과) 도 자동으로 그 y 가 0 됨 (0 × scale = 0).
+    if (this.flatBottom) {
+      for (let i = 0; i < this.buffer.length; i++) {
+        if (this.buffer[i].y > 0) this.buffer[i].y = 0;
+      }
+    }
 
     const base = this.dna.shape.base;
     this.gfx.clear();
