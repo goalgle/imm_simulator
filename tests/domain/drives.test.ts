@@ -158,7 +158,8 @@ describe('computeDesiredDirection — 세균(BACTERIA_A)', () => {
       self,
       BACTERIA_A.drives,
       sensesOf({
-        predators: [{ x: 150, y: 100 }],
+        // self(100,100) 기준 30px 거리 — triggerRadius(120) 안쪽 가까이.
+        predators: [{ x: 130, y: 100 }],
         nearestNutrient: { x: 200, y: 100 },
       }),
     );

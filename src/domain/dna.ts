@@ -418,7 +418,7 @@ export const BACTERIA_A: DNA = {
     minSpeedRatio: 0,
   },
   drives: {
-    avoidPredator:   { weight: 1.0, triggerRadius: 180 }, // 1순위 — 시야 안 백혈구 도망
+    avoidPredator:   { weight: 1.0, triggerRadius: 120 }, // 1순위 — 시야 안 백혈구 도망 (회피 시야)
     seekNutrient:    { weight: 0.6 },                     // 2순위 — 영양분
     seekPrey:        { weight: 0 },
     seekCommander:   { weight: 0 },
@@ -432,7 +432,7 @@ export const BACTERIA_A: DNA = {
     attack: 15,                        // 호중구(20) 보다 약함
   },
   command: {
-    visionRange: 180,                  // 회피용 시야. avoidPredator.triggerRadius 와 동일.
+    visionRange: 120,                  // 회피용 시야. avoidPredator.triggerRadius 와 동일.
     commandRange: 0,
     visionGrowth: 0,
     commandGrowth: 0,
@@ -473,7 +473,7 @@ export const BACTERIA_COMMANDER: DNA = {
     // 회피 시야는 일반 세균과 동일(180) — 가까이 와야 도망. 그 안에 들어오면 강하게 회피(1.5).
     // 공격 결정 시야는 별도 (command.visionRange = 540) — 멀리서 호중구 인지하여 팀 모드 결정.
     // 두 시야가 분리되어 있어, 시야는 넓되 평소 영양분 추구를 방해하지 않음.
-    avoidPredator:   { weight: 1.5, triggerRadius: 180 }, // 일반(1.0) 보다 강한 회피
+    avoidPredator:   { weight: 1.5, triggerRadius: 120 }, // 일반(1.0) 보다 강한 회피 (회피 시야)
     seekNutrient:    { weight: 0.7 },                     // 일반(0.6) 보다 살짝 강
     seekPrey:        { weight: 0 },
     seekCommander:   { weight: 0 },
