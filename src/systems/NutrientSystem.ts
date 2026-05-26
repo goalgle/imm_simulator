@@ -152,12 +152,15 @@ export class NutrientSystem {
 
   // 게임: 컷신 (Session 21) — 특정 슬롯을 지정 위치에 활성화. 컷신 spawnNutrients 액션 사용.
   //   슬롯 부족 시 false. registry.nutrient.enabled === false 면 false (등장 차단).
+  //   화면 margin 안쪽으로 clamp — applyNutrientRegen 의 spawnBox 가 화면 끝에 걸쳐 음수 좌표가
+  //   전달돼도 보이는 영역으로 강제. 세균이 끝에 안 모이게 보호.
   spawnAt(index: number, x: number, y: number): boolean {
     if (!this.registry.get('nutrient').enabled) return false;
     const n = this.nutrients[index];
     if (!n) return false;
-    n.x = x;
-    n.y = y;
+    const m = this.bounds.margin;
+    n.x = Math.max(m, Math.min(this.bounds.width - m, x));
+    n.y = Math.max(m, Math.min(this.bounds.height - m, y));
     n.active = true;
     n.respawnAt = 0;
     return true;

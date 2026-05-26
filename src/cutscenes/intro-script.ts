@@ -6,7 +6,7 @@
 // 대본 형식 — 사용자가 텍스트만 편집할 수 있도록 backtick multi-line. 들여쓰기/빈 줄 자동 무시.
 // 라인 단위로 단어별 타이핑 → 라인 사이 짧은 pause → 클릭으로 다음 step.
 
-import { narration, warning, control, spawn, place, pause, waitFor, waitForShockwaves, waitForBacteriaKilled, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
+import { narration, warning, control, spawn, place, pause, waitFor, waitForShockwaves, waitForBacteriaKilled, waitForMacrophageProductions, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
 
 export const CUTSCENE_INTRO: CutsceneStep[] = [
   // 게임: 인트로 진입 시 모든 종 비활성. 각 step 이 필요한 것만 enabled 로.
@@ -82,9 +82,8 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   `),
 
   narration(`
-    백혈구는 세균을 막아야 하고
-    세균은 백혈구를 피하며 영양분을 먹어야 해요.
-    하지만 백혈구는 강하죠.
+    세균은 영양분을 먹어야 해요.
+    하지만 백혈구는 세균을 막아서고 강하죠.
     세균을 좀 더 넣어볼까요?
   `),
 
@@ -106,7 +105,7 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
     붉은 세균을 봤나요? 리더입니다.
     주변 세균들을 조정해요. 카리스마있죠.
     그리고 호중구를 공격하게 해요!
-    개체는 살고싶지만 군집의 결정은 희생도 강요하는 세상의 이치란..
+    개체는 살고싶지만 군집의 결정은 희생을 강요하는 세상의 이치란..
   `),
 
   // 게임: 화면 정리 + 2초 호흡 — 컷신 → 본 스테이지 전환을 부드럽게.
@@ -122,7 +121,7 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   // event : 대식세포 소개
   // 등장 : 호중구 7, 세균 15, 대식세포 1
   // 환경 : 세균커맨더 허용, 영양분 계속 생성, 대식세포의 세포 생성 허용
-  // 종료 : 호중구 전멸까지 대기 (max 60s).
+  // 종료 : 대식세포가 호중구 3마리 생산할 때까지 (max 60s).
   spawn('neutrophil', 7, { spread: 300 }),
   spawn('bacteria', 15, { spread: 300 }),
   spawn('macrophage', 1, { spread: 0 }),
@@ -134,7 +133,7 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
     slowWhenBacteriaAbove: { count: 20, regenMul: 0.5 },
   }),
   evolveCommander(3), // 3초 후 일반 세균 1마리 → 커맨더 자연 진화 트리거
-  waitFor('whiteCellsEliminated', 60),
+  waitForMacrophageProductions(3, 60),
 
   pause(2),
 

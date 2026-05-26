@@ -85,6 +85,7 @@ export type CutsceneStep =
   | { type: 'waitFor'; condition: WaitCondition; maxSeconds: number }
   | { type: 'waitForShockwaves'; count: number; maxSeconds: number }
   | { type: 'waitForBacteriaKilled'; count: number; maxSeconds: number }
+  | { type: 'waitForMacrophageProductions'; count: number; maxSeconds: number }
   | { type: 'evolveCommander'; afterSeconds: number }
   | { type: 'nutrientRegen'; options: NutrientRegenOptions }
   | { type: 'clear' }
@@ -161,6 +162,13 @@ export function waitForShockwaves(count: number, maxSeconds: number): CutsceneSt
 //   분열/wave 와 무관 — 사망 이벤트만. "호중구가 N마리 잡으면 진행" 시연용.
 export function waitForBacteriaKilled(count: number, maxSeconds: number): CutsceneStep {
   return { type: 'waitForBacteriaKilled', count, maxSeconds };
+}
+
+// 게임: step 진입 후 대식세포가 호중구 N마리 생산 시 다음 step. maxSeconds 안전망.
+//   대식세포가 시체 흡수 → 점수 100 도달 → 호중구 1마리 생산. 그 횟수.
+//   "대식세포가 호중구를 N마리 만들 때까지" 시연용.
+export function waitForMacrophageProductions(count: number, maxSeconds: number): CutsceneStep {
+  return { type: 'waitForMacrophageProductions', count, maxSeconds };
 }
 
 // 게임: 일반 세균 1마리 → 커맨더 자동 진화 트리거. afterSeconds 후 게임 내 진화 발생.

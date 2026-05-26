@@ -42,6 +42,9 @@ export class MacrophageSystem {
   private totalScore = 0;
   // 게임: 호중구 사체 점수 별도 추적. 100 도달 시 비율 판정용.
   private whiteCellScoreInPool = 0;
+  // 게임: 누적 호중구 생산 횟수. consumeScoreForProduction 가 성공 (non-null) 반환할 때마다 ++.
+  //   컷신 waitForMacrophageProductions step 이 baseline 과 차이로 검사.
+  private productionCount = 0;
 
   // 게임: registry 는 옵션 (기존 호출자 호환). 있으면 frozen/speedMul 분기 적용.
   constructor(private readonly registry?: EntityRegistry) {}
@@ -67,6 +70,11 @@ export class MacrophageSystem {
 
   getWhiteCellScoreInPool(): number {
     return this.whiteCellScoreInPool;
+  }
+
+  // 게임: 누적 호중구 생산 횟수. 컷신 종료 조건 등에 사용.
+  getProductionCount(): number {
+    return this.productionCount;
   }
 
   // 게임: 매 프레임 호출. 시체 풀은 BloodScene 이 모아서 전달.
@@ -212,6 +220,7 @@ export class MacrophageSystem {
     if (kind === null) return null;  // 모두 skip — 점수 보존
     this.totalScore -= 100;
     this.whiteCellScoreInPool = 0;
+    this.productionCount++;
     return { kind };
   }
 }

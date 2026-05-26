@@ -376,6 +376,9 @@ export class BloodScene extends Phaser.Scene {
   // 게임: waitForBacteriaKilled step 진입 시점의 stageKilled baseline.
   //   매 프레임 (현재 stageKilled - baseline) >= count 면 advance.
   private cutsceneBacteriaKilledBaseline = 0;
+  // 게임: waitForMacrophageProductions step 진입 시점의 productionCount baseline.
+  //   매 프레임 (현재 productionCount - baseline) >= count 면 advance.
+  private cutsceneMacrophageProductionBaseline = 0;
   // 게임: sparkle 효과 상태 — spawn step 의 sparkleSeconds > 0 일 때 spawn 완료 후 사용.
   //   positions : spawn 한 위치들 (sparkle 그릴 좌표)
   //   gfx       : 매 프레임 strokeCircle 그리는 Graphics. sparkle 종료 시 destroy.
@@ -1067,6 +1070,8 @@ export class BloodScene extends Phaser.Scene {
       this.shockwaveCounter = 0;
       // 게임: waitForBacteriaKilled baseline 갱신 — step 진입 시점 stageKilled 를 기록.
       this.cutsceneBacteriaKilledBaseline = this.bacteriaBehavior.getStageKilled();
+      // 게임: waitForMacrophageProductions baseline 갱신.
+      this.cutsceneMacrophageProductionBaseline = this.macrophageSystem.getProductionCount();
       this.cutsceneAwaitingClick = false;
       this.hideCutsceneUI();
     }
@@ -1132,6 +1137,13 @@ export class BloodScene extends Phaser.Scene {
       this.cutsceneActionTimer += dtReal;
       const killed = this.bacteriaBehavior.getStageKilled() - this.cutsceneBacteriaKilledBaseline;
       if (killed >= step.count || this.cutsceneActionTimer >= step.maxSeconds) {
+        this.advanceCutsceneStep();
+      }
+    } else if (step.type === 'waitForMacrophageProductions') {
+      // 게임: step 진입 후 대식세포 호중구 생산 횟수 >= count OR maxSeconds 도달 시 advance.
+      this.cutsceneActionTimer += dtReal;
+      const produced = this.macrophageSystem.getProductionCount() - this.cutsceneMacrophageProductionBaseline;
+      if (produced >= step.count || this.cutsceneActionTimer >= step.maxSeconds) {
         this.advanceCutsceneStep();
       }
     } else if (step.type === 'evolveCommander') {
