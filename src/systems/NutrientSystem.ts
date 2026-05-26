@@ -48,17 +48,21 @@ export class NutrientSystem {
   }
 
   // 게임: 새 영양분(또는 부활용) 생성. 항상 active=true. spawnBox 설정 시 그 안에서 무작위, 아니면 화면 전체.
+  //   spawnBox 분기에 화면 margin clamp 추가 — 박스가 화면 끝에 걸쳐 있으면 영양분이 화면 밖
+  //   생성되는 문제 방지 (백혈구 centroid 가 끝에 몰릴 때 등).
   private makeFreshNutrient(): Nutrient {
+    const m = this.bounds.margin;
     if (this.spawnBox !== null) {
       const b = this.spawnBox;
+      const rawX = b.cx + (Math.random() * 2 - 1) * b.half;
+      const rawY = b.cy + (Math.random() * 2 - 1) * b.half;
       return {
-        x: b.cx + (Math.random() * 2 - 1) * b.half,
-        y: b.cy + (Math.random() * 2 - 1) * b.half,
+        x: Math.max(m, Math.min(this.bounds.width - m, rawX)),
+        y: Math.max(m, Math.min(this.bounds.height - m, rawY)),
         active: true,
         respawnAt: 0,
       };
     }
-    const m = this.bounds.margin;
     return {
       x: m + Math.random() * (this.bounds.width - m * 2),
       y: m + Math.random() * (this.bounds.height - m * 2),

@@ -18,6 +18,12 @@ const MITOSIS_PEAK_SCALE = 1.4;
 const ABSORB_RADIUS_BONUS = 5;
 const MITOSIS_THRESHOLD = 3;
 
+// 게임: 벽 탄성 반사 계수. 0=흡수(정지), 1=완전 탄성. 0.5 = 호중구와 동일.
+//   이전엔 vx=0 단순 클램프 — drives 의 desired 가 벽 쪽이면 정지 + 분열 자식이 누적되어
+//   세균이 벽에 박혀 군집 (특히 모바일 portrait 좁은 화면에서 빈발). 탄성 반사로 한 번 튕겨
+//   안쪽으로 → 다음 frame drives 가 다시 벽 쪽으로 끌더라도 lerp 시간 차로 박힘 해소.
+const BACTERIA_WALL_BOUNCE = 0.5;
+
 export class Bacteria extends LivingCell {
   absorbCounter = 0;
   mitosis: MitosisState = null;
@@ -115,10 +121,11 @@ export class Bacteria extends LivingCell {
     this.y += this.vy * dt;
 
     const r = this.dna.shape.base;
-    if (this.x < r) { this.x = r; if (this.vx < 0) this.vx = 0; }
-    else if (this.x > bounds.width - r) { this.x = bounds.width - r; if (this.vx > 0) this.vx = 0; }
-    if (this.y < r) { this.y = r; if (this.vy < 0) this.vy = 0; }
-    else if (this.y > bounds.height - r) { this.y = bounds.height - r; if (this.vy > 0) this.vy = 0; }
+    // 게임: 벽 탄성 반사 — vx=0 강제하면 drives 가 벽 쪽이면 정체. 반사로 안쪽 push.
+    if (this.x < r) { this.x = r; if (this.vx < 0) this.vx = -this.vx * BACTERIA_WALL_BOUNCE; }
+    else if (this.x > bounds.width - r) { this.x = bounds.width - r; if (this.vx > 0) this.vx = -this.vx * BACTERIA_WALL_BOUNCE; }
+    if (this.y < r) { this.y = r; if (this.vy < 0) this.vy = -this.vy * BACTERIA_WALL_BOUNCE; }
+    else if (this.y > bounds.height - r) { this.y = bounds.height - r; if (this.vy > 0) this.vy = -this.vy * BACTERIA_WALL_BOUNCE; }
 
     // 게임: 분열 진행 중이면 시각 펄스 계산 + 완료 처리.
     let mitosisScale = 1.0;
