@@ -349,6 +349,10 @@ export class WhiteCellBehaviorSystem {
 
         const weak = aWeak ? a : b;
         const strong = aWeak ? b : a;
+        // 게임: 이미 다른 strong 과 fusion 시작한 weak 는 이 페어 skip — 1대1 보장.
+        //   같은 frame 안에 weak 가 여러 strong 과 거리 안일 때, 카운터는 처음 페어 1마리에만.
+        //   strong 측은 다른 weak 와의 페어로 추가 카운트 가능 (한 마리가 여러 약한 동료 흡수).
+        if (weak.isFusing()) continue;
         // 게임: 즉시 isAbsorbed 대신 애니메이션 시작 — weak 가 strong 으로 빨려들어감.
         //   완료(0.35s 후) 시 weak.isAbsorbed=true 로 자동 정리.
         weak.startFusion(strong);
