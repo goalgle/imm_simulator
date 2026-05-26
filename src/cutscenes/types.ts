@@ -84,6 +84,7 @@ export type CutsceneStep =
   | { type: 'pause'; seconds: number }
   | { type: 'waitFor'; condition: WaitCondition; maxSeconds: number }
   | { type: 'waitForShockwaves'; count: number; maxSeconds: number }
+  | { type: 'waitForBacteriaKilled'; count: number; maxSeconds: number }
   | { type: 'evolveCommander'; afterSeconds: number }
   | { type: 'nutrientRegen'; options: NutrientRegenOptions }
   | { type: 'clear' }
@@ -153,6 +154,13 @@ export function waitFor(condition: WaitCondition, maxSeconds: number): CutsceneS
 //   다른 step (narration 등) 에선 화면 탭이 평소대로 동작.
 export function waitForShockwaves(count: number, maxSeconds: number): CutsceneStep {
   return { type: 'waitForShockwaves', count, maxSeconds };
+}
+
+// 게임: step 진입 후 세균 N마리 사망 시 다음 step. maxSeconds 안전망.
+//   step 진입 시점의 stageKilled 를 baseline 으로 저장 → 그 후 추가 사망만 카운트.
+//   분열/wave 와 무관 — 사망 이벤트만. "호중구가 N마리 잡으면 진행" 시연용.
+export function waitForBacteriaKilled(count: number, maxSeconds: number): CutsceneStep {
+  return { type: 'waitForBacteriaKilled', count, maxSeconds };
 }
 
 // 게임: 일반 세균 1마리 → 커맨더 자동 진화 트리거. afterSeconds 후 게임 내 진화 발생.

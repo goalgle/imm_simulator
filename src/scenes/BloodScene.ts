@@ -373,6 +373,9 @@ export class BloodScene extends Phaser.Scene {
   // 게임: waitForShockwaves step 진입 후 발사된 충격파 카운터. handleRunningTap 의 trySpawn 성공 시 ++.
   //   step 진입 시 0 reset → 그 후 발사만 카운트.
   private shockwaveCounter = 0;
+  // 게임: waitForBacteriaKilled step 진입 시점의 stageKilled baseline.
+  //   매 프레임 (현재 stageKilled - baseline) >= count 면 advance.
+  private cutsceneBacteriaKilledBaseline = 0;
   // 게임: sparkle 효과 상태 — spawn step 의 sparkleSeconds > 0 일 때 spawn 완료 후 사용.
   //   positions : spawn 한 위치들 (sparkle 그릴 좌표)
   //   gfx       : 매 프레임 strokeCircle 그리는 Graphics. sparkle 종료 시 destroy.
@@ -870,7 +873,10 @@ export class BloodScene extends Phaser.Scene {
       this.populateStageStart();
       this.beginNextPlacement(this.scale.width, this.scale.height);
     } else {
-      // CUTSCENE_INTRO 종료 → stage 타이틀 + stage.intro 흐름.
+      // CUTSCENE_INTRO 종료 → entity 정리 (대본 마지막에 clear() 없어도 안전) → stage 흐름.
+      //   직전 이벤트 (충격파 단계 등) 의 entity 가 본게임에 중복으로 넘어가는 문제 방지.
+      //   stage.intro 또는 본게임의 populateStageStart 가 깨끗한 상태에서 spawn.
+      this.applyCutsceneClear();
       this.startStageFlow();
     }
   }
@@ -1053,6 +1059,8 @@ export class BloodScene extends Phaser.Scene {
       this.cutsceneSparkleGfx = null;
       // 게임: 충격파 카운터 reset — waitForShockwaves step 진입 시 새로 세기 시작.
       this.shockwaveCounter = 0;
+      // 게임: waitForBacteriaKilled baseline 갱신 — step 진입 시점 stageKilled 를 기록.
+      this.cutsceneBacteriaKilledBaseline = this.bacteriaBehavior.getStageKilled();
       this.cutsceneAwaitingClick = false;
       this.hideCutsceneUI();
     }
@@ -1110,6 +1118,14 @@ export class BloodScene extends Phaser.Scene {
       //   shockwaveCounter 는 step 진입 시 0 reset 됨 (applyCutsceneStep else 분기).
       this.cutsceneActionTimer += dtReal;
       if (this.shockwaveCounter >= step.count || this.cutsceneActionTimer >= step.maxSeconds) {
+        this.advanceCutsceneStep();
+      }
+    } else if (step.type === 'waitForBacteriaKilled') {
+      // 게임: step 진입 후 추가 사망한 세균 수 >= count OR maxSeconds 도달 시 advance.
+      //   baseline 은 step 진입 시 (applyCutsceneStep else 분기) 에 set.
+      this.cutsceneActionTimer += dtReal;
+      const killed = this.bacteriaBehavior.getStageKilled() - this.cutsceneBacteriaKilledBaseline;
+      if (killed >= step.count || this.cutsceneActionTimer >= step.maxSeconds) {
         this.advanceCutsceneStep();
       }
     } else if (step.type === 'evolveCommander') {
