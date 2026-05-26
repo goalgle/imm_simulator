@@ -860,6 +860,12 @@ export class BloodScene extends Phaser.Scene {
   private endCutscene(): void {
     if (this.phase !== 'cutscene') return;
     console.log('[cutscene] end', this.cutsceneIsStageIntro ? '(stage intro)' : '(global intro)');
+    // 게임: sentinel — 다음 update 의 updateCutscene 이 early return 하도록.
+    //   showStageTitle 이 2.5s tween 동안 phase 가 여전히 'cutscene' 인데,
+    //   step 'end' 자리에 머물러 매 프레임 endCutscene 가 재호출되어 startStageFlow 가
+    //   반복 → stage 타이틀과 stage.intro UI 가 중첩으로 쌓이는 문제 차단.
+    this.cutsceneSteps = [];
+    this.cutsceneStepIndex = 0;
     this.destroyCutsceneUI();
     this.entityRegistry.reset();
     this.bacteriaBehavior.frozen = false;  // legacy flag — 다음 정리 단계에 제거.
