@@ -6,7 +6,7 @@
 // 대본 형식 — 사용자가 텍스트만 편집할 수 있도록 backtick multi-line. 들여쓰기/빈 줄 자동 무시.
 // 라인 단위로 단어별 타이핑 → 라인 사이 짧은 pause → 클릭으로 다음 step.
 
-import { narration, warning, control, spawn, place, pause, waitFor, waitForShockwaves, waitForBacteriaKilled, waitForMacrophageProductions, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
+import { narration, warning, control, spawn, pause, waitFor, waitForShockwaves, waitForBacteriaKilled, waitForMacrophageProductions, evolveCommander, nutrientRegen, clear, end, type CutsceneStep } from './types';
 
 export const CUTSCENE_INTRO: CutsceneStep[] = [
   // 게임: 인트로 진입 시 모든 종 비활성. 각 step 이 필요한 것만 enabled 로.
@@ -175,11 +175,8 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   evolveCommander(3),
   waitForShockwaves(6, 60),
 
-  // 게임: 컷신 종료 직전 사용자 배치 등록 — 컷신 끝나면 placing 단계에서 큐 순서대로 클릭 배치.
-  //   Session 22 — 기존 BloodScene 하드코딩 3개 → place() step 으로 이전.
-  place('tcell', 'T세포 (대장세포)'),
-  place('bacteriaCommander', '세균 커맨더'),
-  place('bcell', 'B세포'),
+  // 게임: 배치 (T세포/세균커맨더/B세포) 는 각 스테이지 setup 으로 이전 (stages/all.ts).
+  //   stage 3 = T세포, stage 4 = 세균커맨더, stage 5 = B세포, stage 7 = 3종 모두.
 
   end(),
 ];

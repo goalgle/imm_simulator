@@ -13,7 +13,7 @@
 //
 // 작성자가 텍스트만 편집할 수 있도록 cutscene helper 직접 import.
 
-import { narration, spawn, pause, nutrientRegen } from '../cutscenes/types';
+import { narration, spawn, place, pause, nutrientRegen } from '../cutscenes/types';
 import type { StageConfig } from './types';
 
 // 게임: 모든 스테이지에 공통인 종료 조건 (현재 디자인).
@@ -89,6 +89,7 @@ export const STAGE_3: StageConfig = {
     `),
   ],
   setup: [
+    place('tcell', 'T세포 (대장세포)'),
     spawn('neutrophil', 9, { spread: 300 }),
     spawn('bacteria', 4, { spread: 200 }),
     spawn('bacteriaCommander', 2, { spread: 200 }),
@@ -115,9 +116,9 @@ export const STAGE_4: StageConfig = {
     `),
   ],
   setup: [
+    place('bacteriaCommander', '세균 커맨더'),
     spawn('neutrophil', 8, { spread: 300 }),
     spawn('bacteria', 4, { spread: 200 }),
-    spawn('bacteriaCommander', 1),
     spawn('macrophage', 2),
     nutrientRegen({ half: 150, initialCount: 10 }),
   ],
@@ -142,6 +143,7 @@ export const STAGE_5: StageConfig = {
     `),
   ],
   setup: [
+    place('bcell', 'B세포'),
     spawn('neutrophil', 8, { spread: 300 }),
     spawn('bacteria', 4, { spread: 200 }),
     spawn('bacteriaCommander', 1),
@@ -194,9 +196,12 @@ export const STAGE_7: StageConfig = {
     `),
   ],
   setup: [
+    place('tcell', 'T세포 (대장세포)'),
+    place('bacteriaCommander', '세균 커맨더'),
+    place('bcell', 'B세포'),
     spawn('neutrophil', 6, { spread: 300 }),
     spawn('bacteria', 5, { spread: 200 }),
-    spawn('bacteriaCommander', 2, { spread: 200 }),
+    spawn('bacteriaCommander', 1, { spread: 200 }),
     spawn('macrophage', 2),
     nutrientRegen({ half: 120, initialCount: 12 }),
   ],
