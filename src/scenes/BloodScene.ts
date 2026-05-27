@@ -28,6 +28,8 @@ import type { StageConfig, StageResult } from '../stages/types';
 import { CUTSCENE_INTRO } from '../cutscenes/intro-script';
 import type { CutsceneStep, WaitCondition } from '../cutscenes/types';
 import { EntityRegistry } from '../domain/entityControl';
+import { SoundSystem, getSoundSystem } from '../sound/SoundSystem';
+import type { LivingCell } from '../entities/LivingCell';
 
 // 게임: 초기 spawn 수는 Session 20 부터 StageConfig 로 이전 (src/stages/types.ts).
 //   T/B세포/세균커맨더 배치는 Session 22 부터 cutscenes/intro-script.ts 의 place() step 으로 이전.
@@ -298,6 +300,11 @@ export class BloodScene extends Phaser.Scene {
   //   컷신 / 디버그 / 스테이지 셋업이 entityRegistry.set() 으로 dimension 제어 →
   //   각 시스템이 매 프레임 조회하여 분기.
   private entityRegistry!: EntityRegistry;
+  // 게임: Tone.js 기반 사운드. 첫 pointerdown 시 ensureStarted (모바일 AudioContext 제약).
+  //   매 프레임 새 사망 검출 → playWhiteCellDeath / playBacteriaDeath.
+  private soundSystem!: SoundSystem;
+  // 게임: 이미 사운드 트리거된 cell 추적 (중복 재생 방지). WeakSet — cell GC 시 자동 청소.
+  private deadNotified = new WeakSet<LivingCell>();
   private hudText!: Phaser.GameObjects.Text;
   private fpsText!: Phaser.GameObjects.Text;
   // 게임: 키 안내 줄 — 변수로 잡아 [H] 토글 대상에 포함.
@@ -482,6 +489,16 @@ export class BloodScene extends Phaser.Scene {
 
     // 게임: EntityRegistry 먼저 생성 — 시스템들이 생성자로 받음. 모든 종 디폴트.
     this.entityRegistry = new EntityRegistry();
+    // 게임: 사운드 시스템 — 싱글톤. scene.restart() 마다 새로 만들면 synth 누적 → 메모리/오디오 노드 누수.
+    //   getSoundSystem() 가 첫 호출에 인스턴스 생성, 이후 재사용.
+    this.soundSystem = getSoundSystem();
+    this.deadNotified = new WeakSet();
+    // 게임: 사운드 임시 비활성 (프리징 디버깅). ensureStarted 호출 X → started=false 유지 →
+    //   모든 play* 가 early return. 원인 격리 확인 후 다시 복구.
+    // this.input.once('pointerdown', () => this.soundSystem.ensureStarted());
+    // if (this.input.keyboard) {
+    //   this.input.keyboard.once('keydown', () => this.soundSystem.ensureStarted());
+    // }
 
     this.shockwaveSystem = new ShockwaveSystem({
       ...SHOCKWAVE_CONFIG,
@@ -2422,6 +2439,14 @@ export class BloodScene extends Phaser.Scene {
     // 게임: paralysis 외부 전파 — 매 프레임. cell.update 직후 처리해야 paralyzed 효과 즉시 반영.
     this.checkParalysisPropagation(t);
 
+    // 게임: 사운드 임시 비활성 (프리징 디버깅). flag false → notify* 호출 안 됨.
+    //   메서드는 그대로 두고 호출만 가드 — 다시 켜려면 SOUND_ACTIVE = true.
+    const SOUND_ACTIVE = false;
+    if (SOUND_ACTIVE) {
+      this.notifyDeaths();
+      this.notifyContacts(dt);
+    }
+
     // 게임: 9) 흡수된 시체 정리 — 풀에서 제거 + 그래픽 핸들 destroy.
     this.cleanupAbsorbed();
 
@@ -2537,6 +2562,51 @@ export class BloodScene extends Phaser.Scene {
   private cleanupAbsorbed(): void {
     this.whiteCellBehavior.removeAbsorbed();
     this.bacteriaBehavior.removeAbsorbed();
+  }
+
+  // 게임: 호중구↔세균 접촉 중 멜로디 "딩" 확률 trigger.
+  //   매 페어 매 프레임 (dt × TRIGGER_RATE) 확률. 한 프레임 최대 1번만 — cacophony 방지 +
+  //   Tone.js voice 누적 차단 (PluckSynth 가 짧은 시간에 다수 trigger 시 메인 스레드 부담).
+  //   격렬 전투 (페어 N개) 라도 한 프레임 1 trigger → 자연 빈도 (페어 늘면 검출만 빨라짐).
+  private notifyContacts(dt: number): void {
+    const TRIGGER_RATE = 1.0;  // 페어 당 초당 평균 trigger 수 (전엔 2.5 — 부담 줄임)
+    const triggerProb = dt * TRIGGER_RATE;
+    const whiteCells = this.whiteCellBehavior.getAll();
+    const bacteria = this.bacteriaBehavior.getAll();
+    for (const w of whiteCells) {
+      if (w.isDead()) continue;
+      const wr = w.dna.shape.base;
+      for (const b of bacteria) {
+        if (b.isDead()) continue;
+        const dx = b.x - w.x;
+        const dy = b.y - w.y;
+        const minDist = wr + b.dna.shape.base;
+        if (dx * dx + dy * dy >= minDist * minDist) continue;
+        if (Math.random() < triggerProb) {
+          this.soundSystem.playContact();
+          return;  // 한 프레임 한 번만
+        }
+      }
+    }
+  }
+
+  // 게임: 새 사망 (hp 0 도달) 검출 → 종족별 사운드 트리거. WeakSet 으로 중복 방지.
+  //   백혈구 모든 종 (NEUTROPHIL/NK/BCELL/TCELL/SUPER) — playWhiteCellDeath
+  //   세균 모든 종 (BACTERIA_A/COMMANDER) — playBacteriaDeath
+  //   fusion 흡수 (isAbsorbed=true 인데 hp>0) 는 사망 아님 — 사운드 X.
+  private notifyDeaths(): void {
+    for (const c of this.whiteCellBehavior.getAll()) {
+      if (c.isDead() && !this.deadNotified.has(c)) {
+        this.deadNotified.add(c);
+        this.soundSystem.playWhiteCellDeath();
+      }
+    }
+    for (const b of this.bacteriaBehavior.getAll()) {
+      if (b.isDead() && !this.deadNotified.has(b)) {
+        this.deadNotified.add(b);
+        this.soundSystem.playBacteriaDeath();
+      }
+    }
   }
 
   // 게임: 대식세포 점수 100 도달 시 호중구 생산.
