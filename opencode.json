@@ -1,0 +1,41 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // ✅ 1. 기본 모델 = Big Pickle (planning용)
+  "model": "opencode/big-pickle",
+
+  // ✅ 2. small_model = local Qwen (실행용)
+  "small_model": "omlx/qwen25",
+
+  // ✅ 3. oMLX provider (네가 이미 만든 것)
+  "provider": {
+    "omlx": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://localhost:8000/v1"
+      },
+      "models": {
+        "qwen25": {
+          "name": "Qwen2.5 14B",
+          "id": "Qwen2.5-Coder-14B-Instruct-MLX-4bit"
+        }
+      }
+    }
+  },
+
+  // ✅ 4. MCP → Graphify 연결
+  "mcp": {
+    "graphify": {
+      "type": "local",
+
+      // 👉 graphify MCP 서버 실행
+      "command": ["graphify", "--mcp"],
+
+      "enabled": true
+    }
+  },
+  "permission": {
+    "bash": "ask",
+    "edit": "allow"
+  }
+}

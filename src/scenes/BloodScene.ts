@@ -318,6 +318,8 @@ export class BloodScene extends Phaser.Scene {
   private skillBactBg!: Phaser.GameObjects.Graphics;
   private skillNeutText!: Phaser.GameObjects.Text;
   private skillBactText!: Phaser.GameObjects.Text;
+  private skillNeutZone!: Phaser.GameObjects.Zone;
+  private skillBactZone!: Phaser.GameObjects.Zone;
   private hudText!: Phaser.GameObjects.Text;
   private fpsText!: Phaser.GameObjects.Text;
   // 게임: 키 안내 줄 — 변수로 잡아 [H] 토글 대상에 포함.
@@ -2279,12 +2281,10 @@ export class BloodScene extends Phaser.Scene {
       '시간 종료';
     const isLast = this.currentStageIndex >= STAGES.length - 1;
     const canAdvance = result.stars >= 1;
-    const guide =
-      canAdvance && isLast  ? '🎉 GAME COMPLETE 🎉\n[R] 다시 시작' :
-      canAdvance             ? '[SPACE] 다음 스테이지   [R] 재시작' :
-                              '[R] 재시작';
-    const body = `STAGE ${this.currentStageIndex + 1} — ${this.currentStage.title}\n${headline}\n${starChars}\n잡은 세균 ${result.killed}/${result.total}\n\n${guide}`;
-    const text = this.add.text(W / 2, H / 2, body, {
+    // 게임: 키 안내는 데스크탑용 보조 — 모바일은 아래 버튼. GAME COMPLETE 만 텍스트로.
+    const guide = canAdvance && isLast ? '🎉 GAME COMPLETE 🎉' : '';
+    const body = `STAGE ${this.currentStageIndex + 1} — ${this.currentStage.title}\n${headline}\n${starChars}\n잡은 세균 ${result.killed}/${result.total}${guide ? '\n\n' + guide : ''}`;
+    const text = this.add.text(W / 2, H * 0.38, body, {
       color: '#ffe17a',
       fontFamily: 'ui-monospace, monospace',
       fontSize: '28px',
@@ -2297,6 +2297,45 @@ export class BloodScene extends Phaser.Scene {
     });
     text.setOrigin(0.5, 0.5);
     text.setDepth(BUBBLE_DEPTH + 10);
+
+    // 게임: 모바일 대응 — [SPACE]/[R] 키 동작을 버튼으로. 키도 그대로 동작 (데스크탑).
+    const btnY = H * 0.62;
+    if (canAdvance && !isLast) {
+      this.addModalButton('다음 스테이지 ▶', W / 2 - 96, btnY, 0x2a5a3a, () => {
+        if (this.perkSelecting) return;
+        this.showPerkSelect(this.currentStageIndex + 1);
+      });
+      this.addModalButton('재시작 ↻', W / 2 + 96, btnY, 0x3a3a5a, () => this.restartStage());
+    } else if (canAdvance && isLast) {
+      this.addModalButton('처음부터 ↻', W / 2, btnY, 0x3a3a5a, () =>
+        this.scene.restart({ stageIndex: 0, skipIntro: false }));
+    } else {
+      this.addModalButton('재시작 ↻', W / 2, btnY, 0x5a3a3a, () => this.restartStage());
+    }
+  }
+
+  // 게임: 결과 모달 버튼 — 둥근 사각 bg + 라벨 + 투명 Zone (클릭). scene.restart 시 자동 destroy.
+  private addModalButton(label: string, cx: number, cy: number, color: number, onClick: () => void): void {
+    const bw = 176;
+    const bh = 52;
+    const depth = BUBBLE_DEPTH + 11;
+    const bg = this.add.graphics().setDepth(depth);
+    bg.fillStyle(color, 0.95);
+    bg.lineStyle(2, 0xffffff, 0.5);
+    bg.fillRoundedRect(cx - bw / 2, cy - bh / 2, bw, bh, 10);
+    bg.strokeRoundedRect(cx - bw / 2, cy - bh / 2, bw, bh, 10);
+    const txt = this.add.text(cx, cy, label, {
+      color: '#ffffff', fontFamily: 'ui-monospace, monospace', fontSize: '17px', fontStyle: 'bold',
+    }).setOrigin(0.5, 0.5).setDepth(depth + 1);
+    void txt;
+    const zone = this.add.zone(cx, cy, bw, bh).setInteractive();
+    zone.setDepth(depth + 2);
+    zone.on('pointerdown', onClick);
+  }
+
+  // 게임: 현재 스테이지 재시작 — index 유지, 첫 스테이지만 intro 재생 (디버그 편의).
+  private restartStage(): void {
+    this.scene.restart({ stageIndex: this.currentStageIndex, skipIntro: this.currentStageIndex > 0 });
   }
 
   // 게임: 특전 선택 화면 — 결과 모달 [SPACE] 후 표시. 7종 중 랜덤 3개 카드.
@@ -2415,9 +2454,9 @@ export class BloodScene extends Phaser.Scene {
       color: '#ffffff', fontFamily: 'ui-monospace, monospace', fontSize: '15px',
       fontStyle: 'bold', align: 'center',
     }).setOrigin(0.5, 0.5).setDepth(depth + 1);
-    const neutZone = this.add.zone(half / 2, cy, half - pad * 2, barBottom - barTop - pad * 2).setInteractive();
-    neutZone.setDepth(depth + 2);
-    neutZone.on('pointerdown', () => this.useNeutrophilSkill());
+    this.skillNeutZone = this.add.zone(half / 2, cy, half - pad * 2, barBottom - barTop - pad * 2).setInteractive();
+    this.skillNeutZone.setDepth(depth + 2);
+    this.skillNeutZone.on('pointerdown', () => this.useNeutrophilSkill());
 
     // 게임: 세균 버튼 (우측 절반).
     this.skillBactBg = this.add.graphics().setDepth(depth);
@@ -2425,11 +2464,25 @@ export class BloodScene extends Phaser.Scene {
       color: '#ffffff', fontFamily: 'ui-monospace, monospace', fontSize: '15px',
       fontStyle: 'bold', align: 'center',
     }).setOrigin(0.5, 0.5).setDepth(depth + 1);
-    const bactZone = this.add.zone(half + half / 2, cy, half - pad * 2, barBottom - barTop - pad * 2).setInteractive();
-    bactZone.setDepth(depth + 2);
-    bactZone.on('pointerdown', () => this.useBacteriaSkill());
+    this.skillBactZone = this.add.zone(half + half / 2, cy, half - pad * 2, barBottom - barTop - pad * 2).setInteractive();
+    this.skillBactZone.setDepth(depth + 2);
+    this.skillBactZone.on('pointerdown', () => this.useBacteriaSkill());
 
     this.updateSkillButtons();
+  }
+
+  // 게임: 스킬 바 표시/숨김 — running phase 에만 보임 (컷신/placing 중엔 숨김 + 클릭 비활성).
+  //   매 프레임 update 가 phase 따라 호출.
+  private setSkillBarVisible(visible: boolean): void {
+    this.skillNeutBg.setVisible(visible);
+    this.skillBactBg.setVisible(visible);
+    this.skillNeutText.setVisible(visible);
+    this.skillBactText.setVisible(visible);
+    // 게임: Zone 은 visible 무관하게 input 받으므로 interactive 도 토글.
+    this.skillNeutZone.setVisible(visible);
+    this.skillBactZone.setVisible(visible);
+    if (visible) { this.skillNeutZone.setInteractive(); this.skillBactZone.setInteractive(); }
+    else { this.skillNeutZone.disableInteractive(); this.skillBactZone.disableInteractive(); }
   }
 
   // 게임: 스킬 버튼 배경/텍스트 갱신 — charge 수 표시 + 0 이면 회색 (비활성 시각).
@@ -2499,6 +2552,11 @@ export class BloodScene extends Phaser.Scene {
       this.debugHud.setText(
         `phase=${this.phase}  bubbles=${this.bubbles.length}/${BUBBLE_MAX}  mode=${mode} (hit ${Math.round(prob * 100)}%)`,
       );
+    }
+
+    // 게임: 스킬 바 — running + 진행 중 (resolved 아님) 일 때만. 컷신/placing/결과모달 중 숨김.
+    if (this.skillNeutBg) {
+      this.setSkillBarVisible(this.phase === 'running' && this.stageState === 'running');
     }
 
     // 게임: 스테이지 HUD — 남은 시간 + 세균 진행. running 일 때만 표시 (cutscene/placing 중 숨김).
