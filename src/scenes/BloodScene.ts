@@ -30,6 +30,8 @@ import type { CutsceneStep, WaitCondition } from '../cutscenes/types';
 import { EntityRegistry } from '../domain/entityControl';
 import { SoundSystem, getSoundSystem } from '../sound/SoundSystem';
 import type { LivingCell } from '../entities/LivingCell';
+import { getPerkState, resetPerkState, applyPerk, pickRandomPerks,
+  getSkillCharges, resetSkillCharges, addStageSkillCharges, useNeutrophilCharge, useBacteriaCharge } from '../domain/perks';
 
 // 게임: 초기 spawn 수는 Session 20 부터 StageConfig 로 이전 (src/stages/types.ts).
 //   T/B세포/세균커맨더 배치는 Session 22 부터 cutscenes/intro-script.ts 의 place() step 으로 이전.
@@ -58,6 +60,9 @@ const SPAWN_MARGIN = 30;
 //   effectiveHeight() = scale.height - 이만큼. bounds / spawn / 대식세포 floor 모두 적용.
 //   CSS 100dvh 와 함께 — dvh 가 잡지 못하는 가림 영역까지 안전 마진 확보.
 const BOTTOM_RESERVE_MOBILE = 80;
+// 게임: 하단 스킬 버튼 바 높이 (px). 게임 영역(effectiveHeight) 을 이만큼 더 줄이고
+//   그 아래 영역에 호중구/세균 추가 버튼 2개 배치. 데스크탑/모바일 공통.
+const SKILL_BAR_HEIGHT = 64;
 const NUTRIENT_RESPAWN_DELAY = 5;
 
 // 게임: 충격파 자원/파동 파라미터.
@@ -305,6 +310,14 @@ export class BloodScene extends Phaser.Scene {
   private soundSystem!: SoundSystem;
   // 게임: 이미 사운드 트리거된 cell 추적 (중복 재생 방지). WeakSet — cell GC 시 자동 청소.
   private deadNotified = new WeakSet<LivingCell>();
+  // 게임: 특전 선택 화면 표시 중 flag. true 면 [SPACE] 무시 + 카드 클릭 대기.
+  private perkSelecting = false;
+  // 게임: 스킬 충전은 perks.ts 의 module singleton (getSkillCharges). 누적 + 사용 차감 이월.
+  //   여기선 버튼 UI refs 만 보유.
+  private skillNeutBg!: Phaser.GameObjects.Graphics;
+  private skillBactBg!: Phaser.GameObjects.Graphics;
+  private skillNeutText!: Phaser.GameObjects.Text;
+  private skillBactText!: Phaser.GameObjects.Text;
   private hudText!: Phaser.GameObjects.Text;
   private fpsText!: Phaser.GameObjects.Text;
   // 게임: 키 안내 줄 — 변수로 잡아 [H] 토글 대상에 포함.
@@ -457,6 +470,10 @@ export class BloodScene extends Phaser.Scene {
     this.cutsceneUiText = null;
     this.cutsceneUiHint = null;
     this.lastStageResult = null;
+    this.perkSelecting = false;
+    // 게임: 첫 스테이지 (index 0) 진입 = 게임 처음 → 특전 누적 초기화.
+    //   다음 스테이지로의 restart (skipIntro=true) 시엔 누적 유지.
+    if (this.currentStageIndex === 0) resetPerkState();
   }
 
   // Phaser: 씬 시작 시 1회 호출.
@@ -493,12 +510,12 @@ export class BloodScene extends Phaser.Scene {
     //   getSoundSystem() 가 첫 호출에 인스턴스 생성, 이후 재사용.
     this.soundSystem = getSoundSystem();
     this.deadNotified = new WeakSet();
-    // 게임: 사운드 임시 비활성 (프리징 디버깅). ensureStarted 호출 X → started=false 유지 →
-    //   모든 play* 가 early return. 원인 격리 확인 후 다시 복구.
-    // this.input.once('pointerdown', () => this.soundSystem.ensureStarted());
-    // if (this.input.keyboard) {
-    //   this.input.keyboard.once('keydown', () => this.soundSystem.ensureStarted());
-    // }
+    // 게임: AudioContext 시작 — 첫 사용자 인터렉션에서. 모바일 정책 대응.
+    //   현재 이벤트 사운드 (사망/분열/흡수/fusion/공격명령) 만 활성. 멜로디 (notifyContacts) 는 OFF.
+    this.input.once('pointerdown', () => this.soundSystem.ensureStarted());
+    if (this.input.keyboard) {
+      this.input.keyboard.once('keydown', () => this.soundSystem.ensureStarted());
+    }
 
     this.shockwaveSystem = new ShockwaveSystem({
       ...SHOCKWAVE_CONFIG,
@@ -542,6 +559,8 @@ export class BloodScene extends Phaser.Scene {
       }
     });
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      // 게임: 스킬 바 영역 (effectiveHeight 아래) 클릭은 게임 입력 제외 — 하단 버튼 Zone 이 처리.
+      if (pointer.y > this.effectiveHeight()) return;
       // 게임: 모바일 + (cutscene 또는 running) — pointerup 에서 swipe vs 탭 분기.
       //   pointerdown 은 시작 좌표 기록만. swipe 가 cutscene 진행 중에도 동작 (속도 조절).
       //   placing 은 즉시 처리 (짧은 탭만 의도).
@@ -629,6 +648,11 @@ export class BloodScene extends Phaser.Scene {
     });
     this.placementText.setOrigin(0.5, 0.5);
 
+    // 게임: 스킬 충전은 singleton (누적). 첫 스테이지 진입 시에만 초기화 (1/1).
+    //   다음 스테이지로의 restart 시엔 유지 — addStageSkillCharges 로 +1, 사용분은 차감된 채.
+    if (this.currentStageIndex === 0) resetSkillCharges();
+    this.createSkillButtons();
+
     // 게임: 컷신 시작 (Session 21) — 첫 스테이지에만. skipIntro = 다음 스테이지 진입.
     //   컷신 끝나면 자동으로 beginNextPlacement → 본게임 진입.
     //   영양분 시스템 frozen + disableAll — 컷신 동안 spawnAt 5개 외 어떤 영양분도 등장 X.
@@ -650,7 +674,7 @@ export class BloodScene extends Phaser.Scene {
     const kb = this.input.keyboard;
     if (kb) {
       kb.on('keydown-N', () => this.spawnNeutrophils(10));
-      kb.on('keydown-B', () => this.spawnBacteria(10));
+      kb.on('keydown-B', () => this.spawnBacteria(10, 2));
       kb.on('keydown-P', () => { this.paused = !this.paused; });
       // 게임: [R] 현재 스테이지 재시작 — init data 로 currentStageIndex 유지, skipIntro=true (intro 반복 방지).
       //   첫 스테이지 (index 0) 에서는 skipIntro=false 라야 CUTSCENE_INTRO 가 다시 나옴 (디버그 편의).
@@ -665,7 +689,9 @@ export class BloodScene extends Phaser.Scene {
         if ((this.lastStageResult?.stars ?? 0) < 1) return;
         const next = this.currentStageIndex + 1;
         if (next >= STAGES.length) return;
-        this.scene.restart({ stageIndex: next, skipIntro: true });
+        if (this.perkSelecting) return;  // 이미 특전 화면 표시 중
+        // 게임: 다음 스테이지 진입 전 특전 선택 화면 — 카드 클릭 시 applyPerk + restart.
+        this.showPerkSelect(next);
       });
       // 게임: 숫자키 1~3 = speed multiplier (shift 없음). shift+1~6 = 변이 1~6 (디버그).
       //   Phaser keydown 콜백 인자 = KeyboardEvent. shiftKey 검사로 분기.
@@ -753,10 +779,10 @@ export class BloodScene extends Phaser.Scene {
     this.speedMultiplier = STEPS[next];
   }
 
-  // 게임: 게임에 실제로 사용할 화면 높이. 모바일 시 BOTTOM_RESERVE_MOBILE 차감.
-  //   bounds / spawn 영역 / 대식세포 floor 모두 이 값 사용. 데스크탑은 scale.height 그대로.
+  // 게임: 게임에 실제로 사용할 화면 높이. 하단 스킬 바 + (모바일) URL 바 영역 차감.
+  //   bounds / spawn 영역 / 대식세포 floor 모두 이 값 사용.
   private effectiveHeight(): number {
-    return this.scale.height - (this.isMobile ? BOTTOM_RESERVE_MOBILE : 0);
+    return this.scale.height - (this.isMobile ? BOTTOM_RESERVE_MOBILE : 0) - SKILL_BAR_HEIGHT;
   }
 
   // 게임: [X] 디버그 — 대식세포 1마리 추가. 무작위 X 위치, 바닥 Y 강제.
@@ -978,6 +1004,23 @@ export class BloodScene extends Phaser.Scene {
     this.stageStartTime = this.gameTime;
     for (const step of this.currentStage.setup) {
       this.runStageStep(step);
+    }
+    // 게임: 특전 — T세포/B세포 초반 자동 등장 (place 와 별개, 모든 스테이지 적용).
+    //   누적 count 만큼 화면 무작위 위치에 spawn.
+    const perk = getPerkState();
+    const W = this.scale.width;
+    const H = this.effectiveHeight();
+    const randPos = (): [number, number] => [
+      SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2),
+      SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2),
+    ];
+    for (let i = 0; i < perk.tcellCount; i++) {
+      const [x, y] = randPos();
+      this.whiteCellBehavior.spawn(TCELL, x, y, Math.random() * Math.PI * 2);
+    }
+    for (let i = 0; i < perk.bcellCount; i++) {
+      const [x, y] = randPos();
+      this.whiteCellBehavior.spawn(BCELL, x, y, Math.random() * Math.PI * 2);
     }
   }
 
@@ -2256,6 +2299,78 @@ export class BloodScene extends Phaser.Scene {
     text.setDepth(BUBBLE_DEPTH + 10);
   }
 
+  // 게임: 특전 선택 화면 — 결과 모달 [SPACE] 후 표시. 7종 중 랜덤 3개 카드.
+  //   카드 클릭 → applyPerk(id) → 다음 스테이지 restart (특전 누적은 module singleton 이라 유지).
+  //   카드/배경 GameObject 는 scene.restart 시 자동 destroy.
+  private showPerkSelect(nextStageIndex: number): void {
+    this.perkSelecting = true;
+    const W = this.scale.width;
+    const H = this.effectiveHeight();
+    const picks = pickRandomPerks(3);
+
+    // 게임: 전체 어둡게 (모달 위 추가 오버레이) + 안내.
+    const overlay = this.add.graphics();
+    overlay.fillStyle(0x000000, 0.7);
+    overlay.fillRect(0, 0, W, this.scale.height);
+    overlay.setDepth(BUBBLE_DEPTH + 20);
+
+    const title = this.add.text(W / 2, H * 0.22, '특전 선택 — 하나를 고르세요', {
+      color: '#ffe17a',
+      fontFamily: 'ui-monospace, monospace',
+      fontSize: '24px',
+      fontStyle: 'bold',
+      align: 'center',
+      stroke: '#1a0a00',
+      strokeThickness: 4,
+    });
+    title.setOrigin(0.5, 0.5);
+    title.setDepth(BUBBLE_DEPTH + 21);
+
+    // 게임: 카드 3장 가로 배치. 화면 폭에 맞춰 카드 너비/간격 결정 (모바일 좁은 폭 대응).
+    const n = picks.length;
+    const gap = 16;
+    const cardW = Math.min(220, (W - gap * (n + 1)) / n);
+    const cardH = 160;
+    const totalW = cardW * n + gap * (n - 1);
+    const startX = (W - totalW) / 2;
+    const cardY = H * 0.5;
+
+    for (let i = 0; i < n; i++) {
+      const def = picks[i];
+      const cx = startX + i * (cardW + gap) + cardW / 2;
+
+      const bg = this.add.graphics();
+      bg.fillStyle(0x12203a, 0.95);
+      bg.lineStyle(2, 0x88ccff, 1);
+      bg.fillRoundedRect(cx - cardW / 2, cardY - cardH / 2, cardW, cardH, 12);
+      bg.strokeRoundedRect(cx - cardW / 2, cardY - cardH / 2, cardW, cardH, 12);
+      bg.setDepth(BUBBLE_DEPTH + 21);
+
+      const label = this.add.text(cx, cardY, `${def.name}\n\n${def.desc}`, {
+        color: '#ffffff',
+        fontFamily: 'ui-monospace, monospace',
+        fontSize: '15px',
+        align: 'center',
+        wordWrap: { width: cardW - 20 },
+        lineSpacing: 6,
+      });
+      label.setOrigin(0.5, 0.5);
+      label.setDepth(BUBBLE_DEPTH + 22);
+      // 게임: 카드 hit 영역 = 투명 Zone (cardW × cardH). 클릭 = 선택. label 위에 깔아 클릭 캐치.
+      const zone = this.add.zone(cx, cardY, cardW, cardH);
+      zone.setInteractive();
+      zone.setDepth(BUBBLE_DEPTH + 23);
+      zone.on('pointerdown', () => {
+        if (!this.perkSelecting) return;  // 중복 클릭 방지
+        this.perkSelecting = false;
+        applyPerk(def.id);
+        // 게임: 스테이지 클리어 보상 — 스킬 충전 각 +1 (사용분은 차감된 채 이월).
+        addStageSkillCharges();
+        this.scene.restart({ stageIndex: nextStageIndex, skipIntro: true });
+      });
+    }
+  }
+
   // 게임: 대식세포 수동 입력 처리 — cursor 키 isDown 매 프레임 검사. 누름 시 manualUntil/Dir 갱신.
   //   동시 누름 = dir 0 (정지). 만료는 MacrophageSystem 가 t < manualUntil 검사로 처리.
   private applyMacrophageManualInput(t: number): void {
@@ -2283,19 +2398,95 @@ export class BloodScene extends Phaser.Scene {
     }
   }
 
-  // 게임: [B] 디버그 — 처음 2마리는 강제 infected 로 검증 편의 (Stage 11 페이즈 2 트리거).
-  //   분열 시 10% 와는 별개. 사용자 검증용.
-  private spawnBacteria(count: number): void {
+  // 게임: 하단 스킬 버튼 2개 생성 — 좌: 호중구 추가, 우: 세균 추가. effectiveHeight 아래 바 영역.
+  //   클릭 Zone + 배경 Graphics + 라벨 Text. charge 표시는 updateSkillButtons.
+  private createSkillButtons(): void {
+    const W = this.scale.width;
+    const barTop = this.effectiveHeight();
+    const barBottom = this.scale.height - (this.isMobile ? BOTTOM_RESERVE_MOBILE : 0);
+    const cy = (barTop + barBottom) / 2;
+    const half = W / 2;
+    const pad = 6;
+    const depth = BUBBLE_DEPTH + 5;
+
+    // 게임: 호중구 버튼 (좌측 절반).
+    this.skillNeutBg = this.add.graphics().setDepth(depth);
+    this.skillNeutText = this.add.text(half / 2, cy, '', {
+      color: '#ffffff', fontFamily: 'ui-monospace, monospace', fontSize: '15px',
+      fontStyle: 'bold', align: 'center',
+    }).setOrigin(0.5, 0.5).setDepth(depth + 1);
+    const neutZone = this.add.zone(half / 2, cy, half - pad * 2, barBottom - barTop - pad * 2).setInteractive();
+    neutZone.setDepth(depth + 2);
+    neutZone.on('pointerdown', () => this.useNeutrophilSkill());
+
+    // 게임: 세균 버튼 (우측 절반).
+    this.skillBactBg = this.add.graphics().setDepth(depth);
+    this.skillBactText = this.add.text(half + half / 2, cy, '', {
+      color: '#ffffff', fontFamily: 'ui-monospace, monospace', fontSize: '15px',
+      fontStyle: 'bold', align: 'center',
+    }).setOrigin(0.5, 0.5).setDepth(depth + 1);
+    const bactZone = this.add.zone(half + half / 2, cy, half - pad * 2, barBottom - barTop - pad * 2).setInteractive();
+    bactZone.setDepth(depth + 2);
+    bactZone.on('pointerdown', () => this.useBacteriaSkill());
+
+    this.updateSkillButtons();
+  }
+
+  // 게임: 스킬 버튼 배경/텍스트 갱신 — charge 수 표시 + 0 이면 회색 (비활성 시각).
+  private updateSkillButtons(): void {
+    const W = this.scale.width;
+    const barTop = this.effectiveHeight();
+    const barBottom = this.scale.height - (this.isMobile ? BOTTOM_RESERVE_MOBILE : 0);
+    const half = W / 2;
+    const pad = 6;
+    const h = barBottom - barTop - pad * 2;
+
+    const charges = getSkillCharges();
+    // 게임: 호중구 (연분홍 활성 / 회색 비활성).
+    const neutColor = charges.neutrophil > 0 ? 0x5a3a4a : 0x2a2a2a;
+    this.skillNeutBg.clear();
+    this.skillNeutBg.fillStyle(neutColor, 0.95);
+    this.skillNeutBg.fillRoundedRect(pad, barTop + pad, half - pad * 2, h, 8);
+    this.skillNeutText.setText(`+호중구 (${charges.neutrophil})`);
+    this.skillNeutText.setColor(charges.neutrophil > 0 ? '#ffd0e0' : '#777777');
+
+    // 게임: 세균 (어두운 회색 활성 / 더 어두움 비활성).
+    const bactColor = charges.bacteria > 0 ? 0x3a3a3a : 0x2a2a2a;
+    this.skillBactBg.clear();
+    this.skillBactBg.fillStyle(bactColor, 0.95);
+    this.skillBactBg.fillRoundedRect(half + pad, barTop + pad, half - pad * 2, h, 8);
+    this.skillBactText.setText(`+세균 (${charges.bacteria})`);
+    this.skillBactText.setColor(charges.bacteria > 0 ? '#dddddd' : '#777777');
+  }
+
+  // 게임: 호중구 스킬 — running 일 때만, charge > 0 이면 10마리 spawn + charge -1 (singleton).
+  private useNeutrophilSkill(): void {
+    if (this.phase !== 'running') return;
+    if (!useNeutrophilCharge()) return;
+    this.spawnNeutrophils(10);
+    this.updateSkillButtons();
+  }
+
+  // 게임: 세균 스킬 — running 일 때만, charge > 0 이면 일반 세균 10마리 spawn (infected X) + charge -1.
+  private useBacteriaSkill(): void {
+    if (this.phase !== 'running') return;
+    if (!useBacteriaCharge()) return;
+    this.spawnBacteria(10);
+    this.updateSkillButtons();
+  }
+
+  // 게임: 세균 spawn. forceInfected = 처음 N마리 강제 infected.
+  //   [B] 디버그 키는 2 (페이즈 2 트리거 검증). 스킬 버튼은 0 (일반 세균만 — 점수용).
+  private spawnBacteria(count: number, forceInfected = 0): void {
     const W = this.scale.width;
     const H = this.effectiveHeight();
-    const FORCE_INFECTED_PREFIX = 2;
     for (let i = 0; i < count; i++) {
       const x = SPAWN_MARGIN + Math.random() * (W - SPAWN_MARGIN * 2);
       const y = SPAWN_MARGIN + Math.random() * (H - SPAWN_MARGIN * 2);
       const phase = Math.random() * Math.PI * 2;
       const b = this.bacteriaBehavior.spawn(BACTERIA_A, x, y, phase);
       // 게임: registry enabled=false 인 경우 spawn null. infected 부여 skip.
-      if (b !== null && i < FORCE_INFECTED_PREFIX) b.setInfected();
+      if (b !== null && i < forceInfected) b.setInfected();
     }
   }
 
@@ -2439,13 +2630,11 @@ export class BloodScene extends Phaser.Scene {
     // 게임: paralysis 외부 전파 — 매 프레임. cell.update 직후 처리해야 paralyzed 효과 즉시 반영.
     this.checkParalysisPropagation(t);
 
-    // 게임: 사운드 임시 비활성 (프리징 디버깅). flag false → notify* 호출 안 됨.
-    //   메서드는 그대로 두고 호출만 가드 — 다시 켜려면 SOUND_ACTIVE = true.
-    const SOUND_ACTIVE = false;
-    if (SOUND_ACTIVE) {
-      this.notifyDeaths();
-      this.notifyContacts(dt);
-    }
+    // 게임: 이벤트 사운드 활성 (사망), 멜로디 비활성 (접촉 페어 매 프레임 trigger 가 프리징 원인).
+    //   멜로디 다시 켜려면 MELODY_ACTIVE = true.
+    this.notifyDeaths();
+    const MELODY_ACTIVE = false;
+    if (MELODY_ACTIVE) this.notifyContacts(dt);
 
     // 게임: 9) 흡수된 시체 정리 — 풀에서 제거 + 그래픽 핸들 destroy.
     this.cleanupAbsorbed();
@@ -2454,12 +2643,15 @@ export class BloodScene extends Phaser.Scene {
     //   placement / cutscene 단계는 stage 진행 X. running 일 때만 stage logic 호출.
     //   stage 시간 = gameTime - stageStartTime (cutscene 중 gameTime 진행되므로).
     this.bacteriaBehavior.pollKilled();
-    // 게임: 영양분 동적 리젠 조절 — 살아있는 세균 수 vs 임계 비교, NutrientSystem.respawnDelayMul 갱신.
-    //   세균 ≥ rule.count → mul = 1/regenMul (느림). 그 외 → 1 (정상).
-    if (this.nutrientRegenRule !== null) {
-      const liveBac = this.bacteriaBehavior.getAlive().length;
-      const above = liveBac >= this.nutrientRegenRule.count;
-      this.nutrientSystem.respawnDelayMul = above ? (1 / this.nutrientRegenRule.regenMul) : 1;
+    // 게임: 영양분 리젠 배수 = 특전 (perk.nutrientRegenMul, 기본 1) × 동적 rule (세균 多 시 추가).
+    //   매 프레임 갱신 — perk 누적 + 세균 임계 둘 다 반영. 둘 다 클수록 부활 느림 = 세균 약화.
+    {
+      let mul = getPerkState().nutrientRegenMul;
+      if (this.nutrientRegenRule !== null) {
+        const liveBac = this.bacteriaBehavior.getAlive().length;
+        if (liveBac >= this.nutrientRegenRule.count) mul *= (1 / this.nutrientRegenRule.regenMul);
+      }
+      this.nutrientSystem.respawnDelayMul = mul;
     }
     if (this.phase === 'running') {
       const stageT = this.gameTime - this.stageStartTime;

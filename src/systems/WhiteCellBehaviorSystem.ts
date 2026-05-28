@@ -24,6 +24,14 @@ import type { CellRenderer } from '../render/CellRenderer';
 import type { AntibodySystem } from './AntibodySystem';
 import type { EntityRegistry } from '../domain/entityControl';
 import { dnaKindToEntityKind } from '../domain/entityControl';
+import { getSoundSystem } from '../sound/SoundSystem';
+import { getPerkState } from '../domain/perks';
+import { cloneDna } from '../domain/dna';
+
+// 게임: 특전 (perk) 이 적용되는 호중구류 — NEUTROPHIL / SUPER / NK. BCELL/TCELL 은 보조라 제외.
+function isNeutrophilType(kind: string): boolean {
+  return kind === 'NEUTROPHIL' || kind === 'NEUTROPHIL_SUPER' || kind === 'NK_CELL';
+}
 
 // 게임: 흡수 발동 거리 = baseRadius 합 + 이 padding.
 //   2 → 20 (Session 16) — 분리력(SEPARATION_PADDING=4, strength=400 px/s²)에 밀려나기 전
@@ -57,7 +65,14 @@ export class WhiteCellBehaviorSystem {
   //   기존 add() 는 fusion 변환 등 시스템 내부용 — enabled 검사 안 함.
   spawn(dna: import('../domain/dna').DNA, x: number, y: number, phase = 0, initialHp?: number): WhiteCell | null {
     if (!this.registry.get(dnaKindToEntityKind(dna.kind)).enabled) return null;
-    const cell = new WhiteCellCtor(dna, this.renderer, x, y, phase, initialHp);
+    // 게임: 특전 — 호중구류 체력 배수. dna 클론 후 maxHp 조정 (initialHp 미지정 시 maxHp 로 채워짐).
+    let effDna = dna;
+    const hpMul = getPerkState().hpMul;
+    if (hpMul !== 1 && isNeutrophilType(dna.kind)) {
+      effDna = cloneDna(dna);
+      effDna.combat.maxHp = Math.round(dna.combat.maxHp * hpMul);
+    }
+    const cell = new WhiteCellCtor(effDna, this.renderer, x, y, phase, initialHp);
     this.cells.push(cell);
     return cell;
   }
@@ -164,8 +179,9 @@ export class WhiteCellBehaviorSystem {
       };
 
       const ratio = Math.max(cell.hpRatio(), cell.dna.behavior.minSpeedRatio);
-      // 게임: registry.speedMul 추가 곱셈 — 컷신 slow-motion / 디버그용.
-      const speed = cell.dna.behavior.speed * ratio * ctrl.speedMul;
+      // 게임: registry.speedMul (컷신/디버그) × perk.speedMul (호중구류 특전).
+      const perkSpeedMul = isNeutrophilType(cell.dnaKind) ? getPerkState().speedMul : 1;
+      const speed = cell.dna.behavior.speed * ratio * ctrl.speedMul * perkSpeedMul;
       applyDriveLerp(cell, cell.dna.drives, senses, speed, cell.dna.behavior.turnRate, dt);
     }
 
@@ -356,6 +372,7 @@ export class WhiteCellBehaviorSystem {
         // 게임: 즉시 isAbsorbed 대신 애니메이션 시작 — weak 가 strong 으로 빨려들어감.
         //   완료(0.35s 후) 시 weak.isAbsorbed=true 로 자동 정리.
         weak.startFusion(strong);
+        getSoundSystem().playFusion();
         // 게임: 강한 호중구 반동 — 약한 호중구가 들어오는 방향의 반대로 임펄스.
         //   weak → strong 방향이 흡수 방향이므로, 그 반대(= strong → weak 의 반대 = strong 위치 - weak 위치 의 반대)
         //   strong 입장에서 weak 가 자기쪽으로 오니, weak 의 반대편으로 살짝 밀림.

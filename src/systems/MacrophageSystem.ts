@@ -14,6 +14,7 @@ import type { Macrophage } from '../entities/Macrophage';
 import type { WhiteCell } from '../entities/WhiteCell';
 import type { Bacteria } from '../entities/Bacteria';
 import type { EntityRegistry } from '../domain/entityControl';
+import { getPerkState } from '../domain/perks';
 
 // 게임: 점수 정책.
 const SCORE_BACTERIA_CORPSE = 10;
@@ -209,8 +210,11 @@ export class MacrophageSystem {
   //   세 가지 분기 모두 spawnProb=0 으로 막히면 null 반환 (점수 보존 — 다음 호출 시 재시도).
   consumeScoreForProduction(): { kind: 'normal' | 'super' | 'nk' } | null {
     if (this.totalScore < 100) return null;
-    const nkProb = (this.registry?.get('nk').spawnProb ?? 1) * 0.1;
-    const superElig = this.whiteCellScoreInPool >= 40;
+    const perk = getPerkState();
+    // 게임: NK 확률 = 기본 1/10 + perk.nkBonus. (registry spawnProb 곱셈 후)
+    const nkProb = ((this.registry?.get('nk').spawnProb ?? 1)) * (0.1 + perk.nkBonus);
+    // 게임: 슈퍼 자격 — 호중구 점수 ≥ 40, 또는 perk.superBonus 확률로 점수 무관 슈퍼.
+    const superElig = this.whiteCellScoreInPool >= 40 || Math.random() < perk.superBonus;
     const superProb = this.registry?.get('neutrophilSuper').spawnProb ?? 1;
     const normalProb = this.registry?.get('neutrophil').spawnProb ?? 1;
     let kind: 'normal' | 'super' | 'nk' | null = null;
