@@ -17,6 +17,7 @@ import type { Positioned, Senses } from '../domain/drives';
 import { applyDriveLerp } from './behaviorHelpers';
 import type { EntityRegistry } from '../domain/entityControl';
 import { dnaKindToEntityKind } from '../domain/entityControl';
+import { getSoundSystem } from '../sound/SoundSystem';
 
 // 게임: 분열 시 자식 위치 오프셋 (px). 부모와 약간 떨어져 시작.
 const SPAWN_OFFSET = 12;
@@ -233,6 +234,7 @@ export class BacteriaBehaviorSystem {
           } else if (!edibleIsAntibody && nIdx >= 0) {
             nutrients.consume(nIdx, t);
             b.registerAbsorb(t);
+            getSoundSystem().playBacteriaAbsorb();
           }
         }
       }
@@ -255,6 +257,7 @@ export class BacteriaBehaviorSystem {
         const child = new BacteriaCtor(b.dna, this.renderer, childX, childY, Math.random() * Math.PI * 2);
         if (Math.random() < INFECTED_CHILD_CHANCE) child.setInfected();
         newborns.push(child);
+        getSoundSystem().playBacteriaMitosis();
       }
     }
     // 게임: 분열 자식도 stageSpawned 카운트 — 사용자가 처리해야 할 세균 수에 포함 (Session 20).

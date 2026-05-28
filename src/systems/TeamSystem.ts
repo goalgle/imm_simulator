@@ -9,6 +9,7 @@
 import type { Bacteria } from '../entities/Bacteria';
 import type { WhiteCell } from '../entities/WhiteCell';
 import type { DNA } from '../domain/dna';
+import { getSoundSystem } from '../sound/SoundSystem';
 
 // 게임: 멤버가 지휘범위 × 이 비율 이상 벗어나면 자동 탈퇴.
 //        영입 거리(commandRange) 보다 살짝 넓게 두어 경계에서 깜빡이는 영입/탈퇴 방지.
@@ -202,8 +203,11 @@ export class TeamSystem {
       const enemyHp = nearest.hpRatio() * nearest.dna.combat.maxHp;
 
       if (teamHp > enemyHp * ATTACK_HP_THRESHOLD) {
+        // 게임: defensive → aggressive 전환 시 한 번만 사운드 — 매 프레임 반복 방지.
+        const wasDefensive = team.mode !== 'aggressive';
         team.mode = 'aggressive';
         team.attackTarget = nearest;
+        if (wasDefensive) getSoundSystem().playCommanderAttack();
       } else {
         team.mode = 'defensive';
         team.attackTarget = null;
