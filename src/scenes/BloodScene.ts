@@ -2630,11 +2630,10 @@ export class BloodScene extends Phaser.Scene {
     // 게임: paralysis 외부 전파 — 매 프레임. cell.update 직후 처리해야 paralyzed 효과 즉시 반영.
     this.checkParalysisPropagation(t);
 
-    // 게임: 이벤트 사운드 활성 (사망), 멜로디 비활성 (접촉 페어 매 프레임 trigger 가 프리징 원인).
-    //   멜로디 다시 켜려면 MELODY_ACTIVE = true.
+    // 게임: 사운드 활성 — 사망 이벤트 + 접촉 멜로디 둘 다.
+    //   멜로디는 playContact 의 시간 가드 + notifyContacts 한 프레임 1 trigger 로 프리징 방지.
     this.notifyDeaths();
-    const MELODY_ACTIVE = false;
-    if (MELODY_ACTIVE) this.notifyContacts(dt);
+    this.notifyContacts(dt);
 
     // 게임: 9) 흡수된 시체 정리 — 풀에서 제거 + 그래픽 핸들 destroy.
     this.cleanupAbsorbed();

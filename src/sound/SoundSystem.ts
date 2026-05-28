@@ -123,10 +123,15 @@ export class SoundSystem {
 
   // 게임: 호중구↔세균 접촉 중 "딩" — 펜타토닉 무작위 노트, 짧은 pluck.
   //   매 페어가 확률적으로 trigger (BloodScene.notifyContacts) → 자연스러운 멜로디.
+  //   PluckSynth 는 monophonic + PolySynth wrap 불가 → 시간 가드로 strictly greater 보장.
+  //   contactNextTime 누적 방지: Tone.now() 가 계속 증가하므로 빈도 낮으면 baseTime 우세.
+  private contactNextTime = 0;
   playContact(): void {
     if (!this.started) return;
+    const safeTime = Math.max(Tone.now(), this.contactNextTime + 0.02);
     const note = CONTACT_NOTES[Math.floor(Math.random() * CONTACT_NOTES.length)];
-    this.contactPluck.triggerAttackRelease(note, '16n');
+    this.contactPluck.triggerAttackRelease(note, '16n', safeTime);
+    this.contactNextTime = safeTime;
   }
 
   // 게임: 세균 분열 — 짧은 sine pop "톡".

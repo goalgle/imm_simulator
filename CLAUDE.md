@@ -91,3 +91,13 @@ The test: every changed line should trace directly to the user's request.
 ## Debug controls (in-scene)
 
 `[N]` +10 neutrophils · `[B]` +10 bacteria · `[P]` pause · `[R]` restart scene · `[1]/[2]/[3]` 1× / 2× / 4× speed · `pointerdown` fires a shockwave. The scene starts in a `placing` phase where TCELL / BACTERIA_COMMANDER / BCELL are placed by clicking — simulation is paused until the queue is empty.
+
+## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Rules:
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
