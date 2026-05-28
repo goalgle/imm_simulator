@@ -483,7 +483,7 @@ export const BACTERIA_COMMANDER: DNA = {
     followCommander: { weight: 0 },                       // 자기가 지휘관 — 따라다니지 않음
   },
   combat: {
-    maxHp: 120,                        // 일반(60) ×2
+    maxHp: 60,                         // 일반(60) 과 동일 (이전 120 → 절반, 너무 강했음)
     attack: 25,                        // 일반(15) 보다 강
   },
   command: {
