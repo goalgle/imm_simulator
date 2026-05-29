@@ -163,13 +163,13 @@ drives (백혈구):
 | color (hsl) | 0,0,30 (어두운 회색) | 330,50,25 (짙은 자주) |
 | speed | 30 | 25 |
 | turnRate | 3.0 | 2.5 |
-| maxHp | 60 | 120 |
+| maxHp | 60 | 60 (이전 120 → 절반, 밸런스) |
 | attack | 15 | 25 |
-| avoidPredator | 1.0 / r=180 | 1.5 / r=180 |
+| avoidPredator | 1.0 / r=120 | 1.5 / r=120 (이전 180 → 2/3, 호중구 접근 기회 ↑) |
 | seekNutrient | 0.6 | 0.7 |
 | spaceAlly | 0.3 / r=50 | 0.2 / r=60 |
 | followCommander | 0.7 | 0 |
-| command.visionRange | 180 (회피) | 540 (팀 결정) |
+| command.visionRange | 120 (회피, avoidPredator 동기화) | 540 (팀 결정) |
 | command.commandRange | 0 | 120 |
 | command.baseTeamSize | 0 | 3 |
 | command.levelUpAbsorbCount | 0 | 5 |
