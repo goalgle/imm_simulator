@@ -1034,7 +1034,8 @@ export class BloodScene extends Phaser.Scene {
     } else if (step.type === 'control') {
       this.entityRegistry.set(step.kind, step.set);
     } else if (step.type === 'nutrientRegen') {
-      this.applyNutrientRegen(step.options);
+      // 게임: 스테이지 setup/wave — 중앙 기준 리젠 (centroid 쏠림 방지).
+      this.applyNutrientRegen(step.options, true);
     } else if (step.type === 'evolveCommander') {
       const remainingDelay = Math.max(0, COMMANDER_EVOLUTION_DELAY - step.afterSeconds);
       this.teamSystem.requeueDeathRecord(this.gameTime - remainingDelay);
@@ -1426,8 +1427,16 @@ export class BloodScene extends Phaser.Scene {
   }
 
   // 게임: nutrientRegen step 처리 — 영양분 부활 박스 set + frozen 해제 + 초기 활성화.
-  //   options.cx/cy 생략 시 살아있는 백혈구 centroid (없으면 화면 중앙).
-  private applyNutrientRegen(options: import('../cutscenes/types').NutrientRegenOptions): void {
+  //   options.cx/cy 생략 시:
+  //     - centerOnScreen=true (스테이지 setup/wave): 플레이 영역 중앙 고정.
+  //         centroid 기본값은 spawn 무작위 편차로 박스가 한쪽 구석(예: 좌상단)에 쏠려
+  //         영양분이 가장자리에만 리젠되는 문제가 있어, 스테이지에선 중앙 기준으로 통일.
+  //     - centerOnScreen=false (컷신 reinforcement): 살아있는 백혈구 centroid (없으면 중앙).
+  //         "세균이 백혈구 영역에 들어와야 먹음" 시연 의도 — 컷신은 기존 동작 유지.
+  private applyNutrientRegen(
+    options: import('../cutscenes/types').NutrientRegenOptions,
+    centerOnScreen = false,
+  ): void {
     const W = this.scale.width;
     const H = this.effectiveHeight();
     const half = options.half ?? 80;
@@ -1435,13 +1444,18 @@ export class BloodScene extends Phaser.Scene {
     let cx = options.cx;
     let cy = options.cy;
     if (cx === undefined || cy === undefined) {
-      const live = this.whiteCellBehavior.getAlive();
-      if (live.length > 0) {
-        cx = cx ?? live.reduce((s, c) => s + c.x, 0) / live.length;
-        cy = cy ?? live.reduce((s, c) => s + c.y, 0) / live.length;
-      } else {
+      if (centerOnScreen) {
         cx = cx ?? W / 2;
         cy = cy ?? H / 2;
+      } else {
+        const live = this.whiteCellBehavior.getAlive();
+        if (live.length > 0) {
+          cx = cx ?? live.reduce((s, c) => s + c.x, 0) / live.length;
+          cy = cy ?? live.reduce((s, c) => s + c.y, 0) / live.length;
+        } else {
+          cx = cx ?? W / 2;
+          cy = cy ?? H / 2;
+        }
       }
     }
     this.nutrientSystem.setSpawnBox({ cx, cy, half });
