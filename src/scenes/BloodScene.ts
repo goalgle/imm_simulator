@@ -599,7 +599,7 @@ export class BloodScene extends Phaser.Scene {
       else this.handleRunningTap(pointer.x, pointer.y);
     });
 
-    this.add.text(20, 20, 'M7: T세포 + 호중구 진화 (level 5 → NK/B/SUPER)', {
+    this.add.text(20, 20, '화면 터치 스크롤 위 아래로 속도 조절', {
       color: '#aaa',
       fontFamily: 'ui-monospace, monospace',
       fontSize: '14px',
