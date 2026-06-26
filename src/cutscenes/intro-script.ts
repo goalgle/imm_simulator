@@ -121,7 +121,9 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
   // event : 대식세포 소개
   // 등장 : 호중구 7, 세균 15, 대식세포 1
   // 환경 : 세균커맨더 허용, 영양분 계속 생성, 대식세포의 세포 생성 허용
-  // 종료 : 대식세포가 호중구 3마리 생산할 때까지 (max 60s).
+  // 종료 : 대식세포가 호중구 2마리 생산할 때까지 (max 30s).
+  //   3마리(=300점)는 등장 개체(호중구7+세균15, 이론상 최대 290점)로 도달 불가 → 2마리(200점)로 하향.
+  //   max 도 60→30s 로 단축 — fallback 체감 대기 단축.
   spawn('neutrophil', 7, { spread: 300 }),
   spawn('bacteria', 15, { spread: 300 }),
   spawn('macrophage', 1, { spread: 0 }),
@@ -133,7 +135,7 @@ export const CUTSCENE_INTRO: CutsceneStep[] = [
     slowWhenBacteriaAbove: { count: 20, regenMul: 0.5 },
   }),
   evolveCommander(3), // 3초 후 일반 세균 1마리 → 커맨더 자연 진화 트리거
-  waitForMacrophageProductions(3, 60),
+  waitForMacrophageProductions(2, 30),
 
   pause(2),
 
